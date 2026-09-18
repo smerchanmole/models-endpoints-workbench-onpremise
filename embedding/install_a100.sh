@@ -9,6 +9,7 @@ TORCH_VERSION="${TORCH_VERSION:-2.9.1}"
 
 "${PYTHON_BIN}" -c 'import sys; assert sys.version_info >= (3, 10), "Se requiere Python >= 3.10"'
 "${PYTHON_BIN}" -m pip install --upgrade "pip>=24.2"
+"${PYTHON_BIN}" -m pip install --upgrade "packaging>=24.0"
 "${PYTHON_BIN}" -m pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu128 \
   "torch==${TORCH_VERSION}"
@@ -20,4 +21,3 @@ TORCH_VERSION="${TORCH_VERSION:-2.9.1}"
 "${PYTHON_BIN}" -c 'import torch; assert torch.version.cuda == "12.8", torch.version.cuda; print("torch", torch.__version__, "CUDA", torch.version.cuda)'
 
 echo "Dependencias de embeddings/A100 instaladas con PyTorch CUDA 12.8."
-
