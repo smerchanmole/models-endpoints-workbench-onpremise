@@ -1,0 +1,7 @@
+--dtype bfloat16
+--gpu-memory-utilization 0.50
+--max-model-len 8192
+--max-num-seqs 64
+--max-num-batched-tokens 8192
+--enable-chunked-prefill
+
