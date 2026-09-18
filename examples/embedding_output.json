@@ -1,0 +1,18 @@
+{
+  "object": "list",
+  "model": "BAAI/bge-m3",
+  "dimension": 1024,
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.0123, -0.0456, 0.0789]
+    },
+    {
+      "object": "embedding",
+      "index": 1,
+      "embedding": [-0.0234, 0.0567, 0.089]
+    }
+  ],
+  "_note": "Ejemplo abreviado: cada embedding real contiene 1024 números float."
+}

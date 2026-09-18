@@ -50,7 +50,7 @@ def _texts(args: dict[str, Any]) -> list[str]:
 
 
 @models.cml_model
-def api_wrapper(args: dict[str, Any]) -> dict[str, Any]:
+def predict(args: dict[str, Any]) -> dict[str, Any]:
     """Devuelve embeddings normalizados con formato similar a OpenAI."""
     if not isinstance(args, dict):
         raise ValueError("La entrada debe ser un objeto JSON")
@@ -74,3 +74,7 @@ def api_wrapper(args: dict[str, Any]) -> dict[str, Any]:
             for index, vector in enumerate(vectors)
         ],
     }
+
+
+# Alias compatible con despliegues creados con la versión anterior.
+api_wrapper = predict

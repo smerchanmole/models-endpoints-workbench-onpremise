@@ -78,7 +78,7 @@ def _split_reasoning(text: str) -> tuple[str | None, str]:
 
 
 @models.cml_model
-def api_wrapper(args: dict[str, Any]) -> dict[str, Any]:
+def predict(args: dict[str, Any]) -> dict[str, Any]:
     """Acepta prompt o messages y devuelve texto, reasoning y uso de tokens."""
     if not isinstance(args, dict):
         raise ValueError("La entrada debe ser un objeto JSON")
@@ -130,3 +130,7 @@ def api_wrapper(args: dict[str, Any]) -> dict[str, Any]:
             ),
         },
     }
+
+
+# Alias compatible con despliegues creados con la versión anterior.
+api_wrapper = predict

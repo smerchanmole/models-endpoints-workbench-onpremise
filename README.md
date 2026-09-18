@@ -5,7 +5,7 @@ Proyecto para desplegar dos Model Endpoints desde Hugging Face en **Cloudera AI 
 - LLM: `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`.
 - Embeddings: `BAAI/bge-m3` (568 M parámetros, 1024 dimensiones, más de 100 idiomas y contexto de 8192 tokens).
 
-Los endpoints usan el contrato de Cloudera `api_wrapper(args)` y el decorador `@cml_model`. Cada combinación GPU/modelo tiene su instalador y su fichero Python.
+Los endpoints usan la función desplegable `predict(args)` y el decorador `@cml_model`. Se conserva `api_wrapper` como alias retrocompatible, pero en nuevos Model Deployments debe seleccionarse siempre **Function = `predict`**.
 
 ## Elección de precisión y memoria
 
@@ -33,14 +33,19 @@ BGE-M3 ocupa aproximadamente 2.27 GB en FP32 y continúa siendo pequeño frente 
 │   ├── model_l40s.py
 │   └── model_h100.py
 ├── embedding/
-    ├── install_l40s.sh
-    ├── install_h100.sh
-    ├── model_l40s.py
-    └── model_h100.py
+│   ├── install_l40s.sh
+│   ├── install_h100.sh
+│   ├── model_l40s.py
+│   └── model_h100.py
+├── examples/
+│   ├── nemotron_input.json
+│   ├── nemotron_output.json
+│   ├── embedding_input.json
+│   └── embedding_output.json
 └── rag_studio/
-    ├── nemotron_l40s.args
+    ├── embedding_bge_m3.args
     ├── nemotron_h100.args
-    └── embedding_bge_m3.args
+    └── nemotron_l40s.args
 ```
 
 Cloudera ejecuta `cdsw-build.sh` en un build limpio; las librerías instaladas manualmente en una sesión no se transfieren al modelo. El dispatcher selecciona uno de los cuatro instaladores mediante `MODEL_FAMILY` y `GPU_TYPE`.
@@ -69,21 +74,24 @@ Construya **un modelo de Cloudera distinto por endpoint/GPU**. En cada build sel
 
 - Build variables: `MODEL_FAMILY=nemotron`, `GPU_TYPE=l40s`.
 - Fichero: `nemotron/model_l40s.py`.
-- Función: `api_wrapper`.
+- Función: `predict`.
+- Example Input: contenido de `examples/nemotron_input.json`.
 - Recursos recomendados: 1 L40S 48 GB, 8 vCPU como mínimo, 64 GB RAM, 1 réplica inicial.
 
 ### Nemotron en H100
 
 - Build variables: `MODEL_FAMILY=nemotron`, `GPU_TYPE=h100`.
 - Fichero: `nemotron/model_h100.py`.
-- Función: `api_wrapper`.
+- Función: `predict`.
+- Example Input: contenido de `examples/nemotron_input.json`.
 - Recursos recomendados: 1 H100 80 GB, 8-16 vCPU, 96-128 GB RAM, 1 réplica inicial.
 
 ### Embeddings en L40S/H100
 
 - Build variables: `MODEL_FAMILY=embedding`, `GPU_TYPE=l40s` o `h100`.
 - Fichero: `embedding/model_l40s.py` o `embedding/model_h100.py`.
-- Función: `api_wrapper`.
+- Función: `predict`.
+- Example Input: contenido de `examples/embedding_input.json`.
 - Recursos recomendados: 1 GPU, 2-4 vCPU, 8-16 GB RAM. El modelo también puede funcionar en CPU cambiando el código/dtype, pero estos artefactos están preparados para GPU.
 
 El primer arranque descarga los pesos. Para evitar arranques lentos y descargas por réplica, monte una caché persistente compartida y configure `HF_HOME` con esa ruta. No use una caché escribible compartida para arrancar muchas réplicas simultáneamente por primera vez: precargue primero el snapshot completo.
@@ -136,26 +144,57 @@ No configure `CUDA_VISIBLE_DEVICES` manualmente: Cloudera/Kubernetes lo proporci
 | `EMBEDDING_MAX_SEQ_LENGTH` | `8192` | `8192` | Máximo real del modelo; los chunks normales de RAG deberían ser menores |
 | `EMBEDDING_MAX_BATCH_SIZE` | `32` | `64` | Límite de entrada; el lote efectivo por defecto es 8/16 |
 
-## Entradas de prueba
+## Ejemplos para el menú de despliegue
 
-Nemotron, conversación:
+En **New Model / Build Model** utilice estos valores:
+
+| Modelo | File | Function | Example Input |
+|---|---|---|---|
+| Nemotron L40S | `nemotron/model_l40s.py` | `predict` | copie `examples/nemotron_input.json` |
+| Nemotron H100 | `nemotron/model_h100.py` | `predict` | copie `examples/nemotron_input.json` |
+| BGE-M3 L40S | `embedding/model_l40s.py` | `predict` | copie `examples/embedding_input.json` |
+| BGE-M3 H100 | `embedding/model_h100.py` | `predict` | copie `examples/embedding_input.json` |
+
+El campo **Example Input** debe contener únicamente el objeto JSON, sin las marcas del bloque Markdown. Los ficheros `*_output.json` muestran la salida esperada para documentación o validación; normalmente no se pegan en el campo de entrada.
+
+### Nemotron: entrada para pegar
 
 ```json
 {
   "messages": [
     {"role": "system", "content": "Responde en español y de forma concisa."},
-    {"role": "user", "content": "Explica qué es una arquitectura MoE."}
+    {"role": "user", "content": "¿Qué es una arquitectura Mixture of Experts?"}
   ],
-  "max_tokens": 512,
+  "max_tokens": 256,
   "temperature": 0.2,
   "top_p": 0.95,
-  "thinking": true
+  "thinking": false
 }
 ```
 
 También acepta `prompt` y `system_prompt`. La respuesta contiene `text`, `reasoning` (si el modelo emite etiquetas de razonamiento), `finish_reason` y contadores de tokens. El límite `max_tokens` nunca puede superar `LLM_MAX_OUTPUT_TOKENS`.
 
-Embedding de documentos:
+### Nemotron: salida orientativa
+
+```json
+{
+  "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+  "context_window": 262144,
+  "text": "Una arquitectura Mixture of Experts utiliza varios expertos especializados y activa solo una parte de ellos para cada token.",
+  "reasoning": null,
+  "finish_reason": "stop",
+  "usage": {
+    "prompt_tokens": 31,
+    "completion_tokens": 25,
+    "total_tokens": 56,
+    "remaining_context_tokens": 262088
+  }
+}
+```
+
+En H100, `model` mostrará el checkpoint `BF16`. El texto y los contadores pueden variar.
+
+### BGE-M3: entrada para pegar
 
 ```json
 {
@@ -164,11 +203,31 @@ Embedding de documentos:
     "Nemotron 3 Nano utiliza una arquitectura híbrida MoE."
   ],
   "input_type": "passage",
-  "normalize": true
+  "normalize": true,
+  "batch_size": 2
 }
 ```
 
-Para buscar esos documentos, genere el vector de la consulta con `input_type=query`. La salida sigue una forma similar a `/v1/embeddings`: `data[].embedding` y dimensión 1024. BGE-M3 no añade prefijos; el campo solo documenta el tipo de entrada.
+Para buscar esos documentos, genere el vector de la consulta con `input_type=query`. BGE-M3 no añade prefijos; el campo solo documenta el tipo de entrada.
+
+### BGE-M3: salida orientativa
+
+```json
+{
+  "object": "list",
+  "model": "BAAI/bge-m3",
+  "dimension": 1024,
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.0123, -0.0456, 0.0789]
+    }
+  ]
+}
+```
+
+La lista está abreviada: cada `embedding` real contiene 1024 números `float`.
 
 ## Integración con RAG Studio
 
@@ -177,7 +236,7 @@ RAG Studio exige que **todos** los endpoints utilicen el estándar OpenAI. Adem�
 - Nemotron: `TEXT_GENERATION` (o `TEXT_TO_TEXT_GENERATION`), API standard `openai`.
 - BGE-M3: `EMBED`, API standard `openai`.
 
-Los cuatro `model_*.py` de este proyecto son endpoints clásicos de **Workbench Models** con `api_wrapper`; no exponen por sí mismos `/v1/chat/completions`, `/v1/embeddings`, `/v1/models` ni streaming SSE. Por tanto, no deben registrarse directamente en RAG Studio como si fueran OpenAI. Son útiles para consumidores del API de Workbench y para probar la carga en la GPU.
+Los cuatro `model_*.py` de este proyecto son endpoints clásicos de **Workbench Models** con `predict`; no exponen por sí mismos `/v1/chat/completions`, `/v1/embeddings`, `/v1/models` ni streaming SSE. Por tanto, no deben registrarse directamente en RAG Studio como si fueran OpenAI. Son útiles para consumidores del API de Workbench y para probar la carga en la GPU.
 
 Para RAG Studio, la ruta recomendada es:
 
@@ -213,7 +272,7 @@ Estas mejoras **no cambian** los valores de precisión del proyecto: L40S contin
 - **OOM al iniciar H100 BF16:** confirme 80 GB sin MIG; use FP8 si el Runtime reserva demasiada VRAM.
 - **`No space left on device`:** mueva `HF_HOME` a almacenamiento persistente con capacidad; la caché BF16 y sus temporales necesitan bastante más que el tamaño final de pesos.
 - **Error de CUDA/rueda:** el driver del nodo es demasiado antiguo para el PyTorch/CUDA que instala vLLM. Actualice el driver/Runtime o construya un Runtime Add-on validado; no instale un toolkit CUDA diferente dentro del pod para ocultar un driver incompatible.
-- **El modelo reinicia tras una petición:** reduzca longitud/lote y revise logs. Cloudera reinicia el modelo cuando `api_wrapper` lanza una excepción no controlada.
+- **El modelo reinicia tras una petición:** reduzca longitud/lote y revise logs. Cloudera reinicia el modelo cuando `predict` lanza una excepción no controlada.
 - **Resultados BGE-M3 pobres:** compruebe normalización consistente, chunks semánticos y que consulta/documentos se hayan generado con exactamente el mismo checkpoint. No reutilice el índice E5 de 384 dimensiones.
 
 ## Referencias

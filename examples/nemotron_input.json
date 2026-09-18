@@ -1,0 +1,16 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "Responde en español y de forma concisa."
+    },
+    {
+      "role": "user",
+      "content": "¿Qué es una arquitectura Mixture of Experts?"
+    }
+  ],
+  "max_tokens": 256,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "thinking": false
+}

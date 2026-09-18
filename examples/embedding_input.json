@@ -1,0 +1,9 @@
+{
+  "input": [
+    "Cloudera AI permite desplegar modelos como endpoints.",
+    "Nemotron 3 Nano utiliza una arquitectura híbrida MoE."
+  ],
+  "input_type": "passage",
+  "normalize": true,
+  "batch_size": 2
+}
