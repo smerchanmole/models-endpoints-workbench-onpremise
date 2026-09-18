@@ -7,6 +7,26 @@ Proyecto para desplegar dos Model Endpoints desde Hugging Face en **Cloudera AI 
 
 Los endpoints usan la función desplegable `predict(args)` y el decorador `@cml_model`. Se conserva `api_wrapper` como alias retrocompatible, pero en nuevos Model Deployments debe seleccionarse siempre **Function = `predict`**.
 
+## Despliegue rápido: embedding BGE-M3 en A100 (SP2)
+
+El repositorio incluye un perfil específico para **NVIDIA A100 de 40 u 80 GB** en Cloudera AI on premises SP2.
+
+| Campo del build/deployment | Valor |
+|---|---|
+| ML Runtime | Nvidia GPU, Python 3.10 |
+| Build variable | `MODEL_FAMILY=embedding` |
+| Build variable | `GPU_TYPE=a100` |
+| Instalador ejecutado | `embedding/install_a100.sh` |
+| File | `embedding/model_a100.py` |
+| Function | `predict` |
+| Example Input | contenido de `examples/embedding_input.json` |
+| GPU | 1 × A100 40/80 GB |
+| Variables de ejecución | ninguna obligatoria |
+
+El instalador A100 fija `torch==2.9.1` con CUDA 12.8 para evitar el error observado en SP2 con el driver CUDA 12.9. Es necesario crear un **build nuevo**; reiniciar un build anterior no reemplaza sus dependencias.
+
+> Nemotron dispone actualmente de perfiles L40S y H100. El perfil A100 añadido en este repositorio corresponde al modelo de embeddings BGE-M3.
+
 ## Elección de precisión y memoria
 
 | Endpoint | GPU | Checkpoint / precisión | Configuración inicial | Motivo |
