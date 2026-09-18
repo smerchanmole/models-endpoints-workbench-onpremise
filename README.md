@@ -14,6 +14,7 @@ Los endpoints usan la función desplegable `predict(args)` y el decorador `@cml_
 | Nemotron | L40S 48 GB | FP8, descarga aproximada 32.7 GB | 262K contexto, 1 secuencia, prefill por bloques de 4096 | BF16 no cabe con runtime y cachés |
 | Nemotron | H100 80 GB | BF16, pesos aproximados 60 GB | 262K contexto, 1 secuencia, prefill por bloques de 8192 | Máxima calidad dentro de una H100 completa |
 | BGE-M3 | L40S | FP16 | 8K contexto, lote 8, máximo 32 | Embedding denso multilingüe para RAG |
+| BGE-M3 | A100 40/80 GB | BF16 | 8K contexto, lote 8, máximo 32 | Perfil compatible con SP2 y CUDA 12.9 |
 | BGE-M3 | H100 | BF16 | 8K contexto, lote 16, máximo 64 | Mayor lote y rango numérico |
 
 Las cifras presuponen una GPU **completa**, sin MIG ni una vGPU con menos VRAM. Nemotron declara un máximo de 262144 tokens. Su arquitectura solo tiene 6 capas de atención y 2 cabezas KV, por lo que su caché KV crece mucho menos que la de un Transformer denso de 30B. El prefill por bloques evita procesar los 262K tokens de una vez. Aun así, 262K es un perfil de capacidad, no de baja latencia: debe validarse con el Runtime y driver reales.
@@ -29,8 +30,10 @@ BGE-M3 ocupa aproximadamente 2.27 GB en FP32 y continúa siendo pequeño frente 
 ├── cdsw-build.sh
 ├── nemotron/
 │   ├── install_l40s.sh
+│   ├── install_a100.sh
 │   ├── install_h100.sh
 │   ├── model_l40s.py
+│   ├── model_a100.py
 │   └── model_h100.py
 ├── embedding/
 │   ├── install_l40s.sh
@@ -53,7 +56,7 @@ Cloudera ejecuta `cdsw-build.sh` en un build limpio; las librerías instaladas m
 ## Requisitos previos del administrador
 
 1. Nodo x86_64 con L40S 48 GB o H100 80 GB, drivers NVIDIA visibles desde Kubernetes y perfil de recursos de 1 GPU completa.
-2. ML Runtime **Nvidia GPU Edition**, Python 3.10 o posterior.
+2. ML Runtime **Nvidia GPU Edition**. En SP2 se recomienda Python 3.10; también se admite una versión posterior si existen ruedas compatibles.
 3. Salida HTTPS a Hugging Face y PyPI durante el build/arranque, o un mirror interno con los mismos artefactos.
 4. Al menos 80 GB libres de disco/caché para L40S y 140 GB para H100 BF16. No incluya los pesos en Git ni en el snapshot del proyecto.
 5. Para instalaciones aisladas, precargue las ruedas y el snapshot del modelo en almacenamiento compartido e indique su ruta local mediante `LLM_MODEL_ID`/`EMBEDDING_MODEL_ID`.
@@ -86,13 +89,23 @@ Construya **un modelo de Cloudera distinto por endpoint/GPU**. En cada build sel
 - Example Input: contenido de `examples/nemotron_input.json`.
 - Recursos recomendados: 1 H100 80 GB, 8-16 vCPU, 96-128 GB RAM, 1 réplica inicial.
 
-### Embeddings en L40S/H100
+### Embeddings en L40S/A100/H100
 
-- Build variables: `MODEL_FAMILY=embedding`, `GPU_TYPE=l40s` o `h100`.
-- Fichero: `embedding/model_l40s.py` o `embedding/model_h100.py`.
+- Build variables: `MODEL_FAMILY=embedding`, `GPU_TYPE=l40s`, `a100` o `h100`.
+- Fichero: `embedding/model_l40s.py`, `embedding/model_a100.py` o `embedding/model_h100.py`.
 - Función: `predict`.
 - Example Input: contenido de `examples/embedding_input.json`.
 - Recursos recomendados: 1 GPU, 2-4 vCPU, 8-16 GB RAM. El modelo también puede funcionar en CPU cambiando el código/dtype, pero estos artefactos están preparados para GPU.
+
+Para el caso observado en SP2 con A100 use exactamente:
+
+- Runtime: Nvidia GPU, Python 3.10.
+- Build: `MODEL_FAMILY=embedding`, `GPU_TYPE=a100`.
+- File: `embedding/model_a100.py`.
+- Function: `predict`.
+- Variables de ejecución: ninguna obligatoria.
+
+Las dos variables del build solo permiten que el `cdsw-build.sh` común elija el instalador correcto. No se deben trasladar docenas de parámetros al deployment: el Python ya contiene valores seguros por defecto.
 
 El primer arranque descarga los pesos. Para evitar arranques lentos y descargas por réplica, monte una caché persistente compartida y configure `HF_HOME` con esa ruta. No use una caché escribible compartida para arrancar muchas réplicas simultáneamente por primera vez: precargue primero el snapshot completo.
 
@@ -106,6 +119,7 @@ El primer arranque descarga los pesos. Para evitar arranques lentos y descargas 
 | `GPU_TYPE` | Sí | `l40s` o `h100` | Selecciona el instalador |
 | `VLLM_VERSION` | No | `0.12.0` | Versión recomendada por la receta oficial del modelo; evite 0.15.0/0.15.1 por una regresión FP8 conocida |
 | `SENTENCE_TRANSFORMERS_VERSION` | No | `5.1.2` | Versión fijada para builds reproducibles |
+| `TORCH_VERSION` | No | `2.9.1` | Embeddings: se instala desde el índice oficial CUDA 12.8 para evitar incompatibilidad con el driver de SP2 |
 
 ### Comunes de ejecución
 
@@ -137,12 +151,14 @@ No configure `CUDA_VISIBLE_DEVICES` manualmente: Cloudera/Kubernetes lo proporci
 
 ### Embeddings
 
-| Variable | L40S | H100 | Notas |
-|---|---|---|---|
-| `EMBEDDING_MODEL_ID` | `BAAI/bge-m3` | igual | Modelo MIT o ruta local inmutable |
-| `EMBEDDING_DEVICE` | `cuda` | `cuda` | Estos artefactos esperan GPU |
-| `EMBEDDING_MAX_SEQ_LENGTH` | `8192` | `8192` | Máximo real del modelo; los chunks normales de RAG deberían ser menores |
-| `EMBEDDING_MAX_BATCH_SIZE` | `32` | `64` | Límite de entrada; el lote efectivo por defecto es 8/16 |
+| Variable | L40S | A100 | H100 | Notas |
+|---|---|---|---|---|
+| `EMBEDDING_MODEL_ID` | `BAAI/bge-m3` | igual | igual | Modelo MIT o ruta local inmutable |
+| `EMBEDDING_DEVICE` | `cuda` | `cuda` | `cuda` | Estos artefactos esperan GPU |
+| `EMBEDDING_MAX_SEQ_LENGTH` | `8192` | `8192` | `8192` | Máximo real; los chunks normales de RAG deberían ser menores |
+| `EMBEDDING_MAX_BATCH_SIZE` | `32` | `32` | `64` | Límite de entrada; el lote efectivo por defecto es 8/8/16 |
+
+Todas estas variables de ejecución son opcionales. Para la primera prueba en A100, no configure ninguna: los valores de la tabla ya son los defaults del código.
 
 ## Ejemplos para el menú de despliegue
 
@@ -153,6 +169,7 @@ En **New Model / Build Model** utilice estos valores:
 | Nemotron L40S | `nemotron/model_l40s.py` | `predict` | copie `examples/nemotron_input.json` |
 | Nemotron H100 | `nemotron/model_h100.py` | `predict` | copie `examples/nemotron_input.json` |
 | BGE-M3 L40S | `embedding/model_l40s.py` | `predict` | copie `examples/embedding_input.json` |
+| BGE-M3 A100 | `embedding/model_a100.py` | `predict` | copie `examples/embedding_input.json` |
 | BGE-M3 H100 | `embedding/model_h100.py` | `predict` | copie `examples/embedding_input.json` |
 
 El campo **Example Input** debe contener únicamente el objeto JSON, sin las marcas del bloque Markdown. Los ficheros `*_output.json` muestran la salida esperada para documentación o validación; normalmente no se pegan en el campo de entrada.
@@ -267,6 +284,8 @@ Mejoras operativas relevantes de SP3:
 Estas mejoras **no cambian** los valores de precisión del proyecto: L40S continúa necesitando FP8 y H100 puede usar BF16. Tampoco se debe sustituir `VLLM_VERSION=0.12.0` del build de Workbench por la versión interna de Inference service: son entornos distintos. Si el equipo decide migrar al servicio gestionado de SP3, configure allí los argumentos equivalentes (`--dtype`, `--kv-cache-dtype`, `--gpu-memory-utilization`, `--max-model-len`, `--max-num-seqs`, `--trust-remote-code`) y no use estos Python.
 
 ## Ajuste y diagnóstico
+
+- **Error observado en SP2 (`driver ... too old`, versión 12090):** no es lentitud ni exceso de variables. PyTorch fue compilado para una versión CUDA posterior a la soportada por el driver. Los instaladores de embeddings fijan ahora `torch==2.9.1` desde el índice `cu128`, que dispone de rueda para Python 3.10 y 3.13 y es compatible con el driver CUDA 12.9. Hay que crear un build nuevo; reiniciar el deployment antiguo no cambia sus dependencias.
 
 - **OOM al iniciar L40S:** confirme que el ID termina en `FP8`, que hay 48 GB visibles y reduzca `LLM_MAX_MODEL_LEN` por escalones: 131072, 65536 y 32768. Si todavía falla, baje `LLM_GPU_MEMORY_UTILIZATION` a `0.85`.
 - **OOM al iniciar H100 BF16:** confirme 80 GB sin MIG; use FP8 si el Runtime reserva demasiada VRAM.
