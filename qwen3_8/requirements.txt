@@ -1,0 +1,4 @@
+# vLLM 0.29.0+cu129 se instala explícitamente desde la release oficial.
+# Mantener Transformers fijado evita que una versión posterior cambie el
+# procesador multimodal o el chat template durante un rebuild.
+transformers==5.15.0

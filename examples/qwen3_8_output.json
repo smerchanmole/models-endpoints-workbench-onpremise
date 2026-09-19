@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-example",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "qwen3.8-27b-fp8",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Cloudera AI es una plataforma para desarrollar, desplegar y operar soluciones de inteligencia artificial sobre datos empresariales.",
+        "reasoning_content": null
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 25,
+    "total_tokens": 45
+  }
+}
