@@ -17,6 +17,24 @@ from typing import Any
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Estas variables son configuración de este wrapper, no variables oficiales de
+# vLLM. Se capturan antes de importarlo y se eliminan del entorno para que vLLM
+# 0.29 no emita "Unknown vLLM environment variable". Los nombres QWEN_* son los
+# canónicos; los VLLM_* anteriores se mantienen como alias retrocompatibles.
+_LEGACY_CONFIG = {
+    name: os.environ.pop(name, None)
+    for name in (
+        "VLLM_TENSOR_PARALLEL_SIZE",
+        "VLLM_GPU_MEMORY_UTILIZATION",
+        "VLLM_MAX_MODEL_LEN",
+        "VLLM_MAX_NUM_SEQS",
+        "VLLM_MAX_NUM_BATCHED_TOKENS",
+        "VLLM_KV_CACHE_DTYPE",
+        "VLLM_ENFORCE_EAGER",
+        "VLLM_CPU_OFFLOAD_GB",
+    )
+}
+
 from vllm import LLM, SamplingParams
 
 
@@ -27,42 +45,79 @@ _MAX_MESSAGE_BYTES = 128 * 1024 * 1024
 _GENERATION_LOCK = threading.Lock()
 
 
-def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    value = int(os.getenv(name, str(default)))
+def _config_value(name: str, legacy_name: str, default: Any) -> str:
+    value = os.getenv(name)
+    if value is None:
+        value = _LEGACY_CONFIG.get(legacy_name)
+    return str(default if value is None else value)
+
+
+def _env_int(
+    name: str, legacy_name: str, default: int, minimum: int, maximum: int
+) -> int:
+    value = int(_config_value(name, legacy_name, default))
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} debe estar entre {minimum} y {maximum}")
     return value
 
 
-def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
-    value = float(os.getenv(name, str(default)))
+def _env_float(
+    name: str, legacy_name: str, default: float, minimum: float, maximum: float
+) -> float:
+    value = float(_config_value(name, legacy_name, default))
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} debe estar entre {minimum} y {maximum}")
     return value
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name, "true" if default else "false").strip().lower()
+def _env_bool(name: str, legacy_name: str, default: bool) -> bool:
+    value = _config_value(
+        name, legacy_name, "true" if default else "false"
+    ).strip().lower()
     if value not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
         raise ValueError(f"{name} debe ser booleano")
     return value in {"1", "true", "yes", "on"}
 
 
-TENSOR_PARALLEL_SIZE = _env_int("VLLM_TENSOR_PARALLEL_SIZE", 1, 1, 8)
-MAX_MODEL_LEN = _env_int("VLLM_MAX_MODEL_LEN", 262144, 2048, 262144)
+TENSOR_PARALLEL_SIZE = _env_int(
+    "QWEN_TENSOR_PARALLEL_SIZE", "VLLM_TENSOR_PARALLEL_SIZE", 1, 1, 8
+)
+MAX_MODEL_LEN = _env_int(
+    "QWEN_MAX_MODEL_LEN", "VLLM_MAX_MODEL_LEN", 262144, 2048, 262144
+)
 GPU_MEMORY_UTILIZATION = _env_float(
-    "VLLM_GPU_MEMORY_UTILIZATION", 0.90, 0.50, 0.95
+    "QWEN_GPU_MEMORY_UTILIZATION",
+    "VLLM_GPU_MEMORY_UTILIZATION",
+    0.90,
+    0.50,
+    0.95,
 )
-MAX_NUM_SEQS = _env_int("VLLM_MAX_NUM_SEQS", 1, 1, 64)
+MAX_NUM_SEQS = _env_int(
+    "QWEN_MAX_NUM_SEQS", "VLLM_MAX_NUM_SEQS", 1, 1, 64
+)
 MAX_NUM_BATCHED_TOKENS = _env_int(
-    "VLLM_MAX_NUM_BATCHED_TOKENS", 8192, 2048, 131072
+    "QWEN_MAX_NUM_BATCHED_TOKENS",
+    "VLLM_MAX_NUM_BATCHED_TOKENS",
+    8192,
+    2048,
+    131072,
 )
-MAX_OUTPUT_TOKENS = _env_int("QWEN_MAX_OUTPUT_TOKENS", 512, 1, 8192)
-CPU_OFFLOAD_GB = _env_float("VLLM_CPU_OFFLOAD_GB", 0.0, 0.0, 128.0)
-KV_CACHE_DTYPE = os.getenv("VLLM_KV_CACHE_DTYPE", "fp8")
-ENFORCE_EAGER = _env_bool("VLLM_ENFORCE_EAGER", True)
+MAX_OUTPUT_TOKENS = _env_int(
+    "QWEN_MAX_OUTPUT_TOKENS", "QWEN_MAX_OUTPUT_TOKENS", 512, 1, 8192
+)
+CPU_OFFLOAD_GB = _env_float(
+    "QWEN_CPU_OFFLOAD_GB", "VLLM_CPU_OFFLOAD_GB", 0.0, 0.0, 128.0
+)
+KV_CACHE_DTYPE = _config_value(
+    "QWEN_KV_CACHE_DTYPE", "VLLM_KV_CACHE_DTYPE", "bfloat16"
+)
+ENFORCE_EAGER = _env_bool(
+    "QWEN_ENFORCE_EAGER", "VLLM_ENFORCE_EAGER", True
+)
 ATTENTION_BACKEND = os.getenv("QWEN_ATTENTION_BACKEND", "TRITON_ATTN")
-MAX_IMAGES = _env_int("QWEN_MAX_IMAGES_PER_PROMPT", 1, 0, 4)
+MAX_IMAGES = _env_int(
+    "QWEN_MAX_IMAGES_PER_PROMPT", "QWEN_MAX_IMAGES_PER_PROMPT", 1, 0, 4
+)
 _allowed_domains = [
     domain.strip()
     for domain in os.getenv("VLLM_ALLOWED_MEDIA_DOMAINS", "").split(",")
@@ -101,13 +156,25 @@ def _load_engine() -> LLM:
             "40 GB hace falta un perfil de contexto reducido validado aparte."
         )
 
+    effective_kv_cache_dtype = KV_CACHE_DTYPE
+    compute_capability = torch.cuda.get_device_capability(0)
+    if KV_CACHE_DTYPE.lower().startswith("fp8") and compute_capability < (8, 9):
+        effective_kv_cache_dtype = "bfloat16"
+        print(
+            "QWEN_CONFIG_ADJUSTMENT requested_kv_cache_dtype="
+            f"{KV_CACHE_DTYPE} effective_kv_cache_dtype=bfloat16 reason="
+            f"compute_capability_{compute_capability[0]}{compute_capability[1]}_lt_89",
+            flush=True,
+        )
+
     print(
         "VLLM_CONFIG "
         f"model={MODEL_ID} tp={TENSOR_PARALLEL_SIZE} "
         f"max_model_len={MAX_MODEL_LEN} max_num_seqs={MAX_NUM_SEQS} "
         f"max_num_batched_tokens={MAX_NUM_BATCHED_TOKENS} "
         f"gpu_memory_utilization={GPU_MEMORY_UTILIZATION} "
-        f"kv_cache_dtype={KV_CACHE_DTYPE} attention_backend={ATTENTION_BACKEND} "
+        f"kv_cache_dtype={effective_kv_cache_dtype} "
+        f"attention_backend={ATTENTION_BACKEND} "
         f"enforce_eager={ENFORCE_EAGER}",
         flush=True,
     )
@@ -117,7 +184,7 @@ def _load_engine() -> LLM:
         served_model_name=SERVED_MODEL_NAME,
         tensor_parallel_size=TENSOR_PARALLEL_SIZE,
         dtype="auto",
-        kv_cache_dtype=KV_CACHE_DTYPE,
+        kv_cache_dtype=effective_kv_cache_dtype,
         attention_backend=ATTENTION_BACKEND,
         cpu_offload_gb=CPU_OFFLOAD_GB,
         max_model_len=MAX_MODEL_LEN,

@@ -61,7 +61,7 @@ El build requiere salida HTTPS a GitHub Releases, PyTorch y PyPI. El primer arra
 | BGE-M3 | L40S | FP16 | 8K contexto, lote 8, máximo 32 | Embedding denso multilingüe para RAG |
 | BGE-M3 | A100 40/80 GB | BF16 | 8K contexto, lote 8, máximo 32 | Perfil compatible con SP2 y CUDA 12.9 |
 | BGE-M3 | H100 | BF16 | 8K contexto, lote 16, máximo 64 | Mayor lote y rango numérico |
-| Qwen3.8 | A100 80 GB | FP8 block-wise; cálculo W8A16/Marlin en Ampere | 262K contexto, 1 secuencia, prefill 8192, KV FP8, eager | El checkpoint ocupa unos 31 GB; el perfil fija vLLM 0.29 |
+| Qwen3.8 | A100 80 GB | Pesos FP8 block-wise; cálculo W8A16/Marlin en Ampere | 262K contexto, 1 secuencia, prefill 8192, KV BF16, eager | A100 SM80 no admite KV FP8 con Triton; el checkpoint ocupa unos 31 GB |
 
 Las cifras presuponen una GPU **completa**, sin MIG ni una vGPU con menos VRAM. Nemotron declara un máximo de 262144 tokens. Su arquitectura solo tiene 6 capas de atención y 2 cabezas KV, por lo que su caché KV crece mucho menos que la de un Transformer denso de 30B. El prefill por bloques evita procesar los 262K tokens de una vez. Aun así, 262K es un perfil de capacidad, no de baja latencia: debe validarse con el Runtime y driver reales.
 
@@ -69,7 +69,7 @@ En la H100 de 80 GB, BF16 deja poco margen; si el runtime concreto consume más 
 
 BGE-M3 ocupa aproximadamente 2.27 GB en FP32 y continúa siendo pequeño frente a estas GPU. Se elige frente a E5-small porque amplía el contexto de embedding de 512 a 8192 tokens y ofrece mejor encaje para documentos largos. No requiere prefijos diferentes para consultas y documentos; `input_type` se conserva en la API para mantener explícita la intención. No mezcle vectores creados con modelos, dimensiones o políticas de normalización distintas en el mismo índice: al cambiar desde E5 hay que reconstruir la colección vectorial.
 
-Qwen3.8 declara 262144 tokens nativos y admite texto, imágenes y vídeo. Este perfil deshabilita vídeo y limita cada petición a una imagen para contener memoria. En una A100 Ampere los pesos FP8 usan un kernel compatible W8A16, no el camino FP8 nativo de Hopper. `VLLM_ENFORCE_EAGER=true` y `TRITON_ATTN` son valores conservadores para evitar bloqueos de CUDA graphs y compilación JIT de FlashInfer. Si 262K no deja KV cache suficiente, reduzca `VLLM_MAX_MODEL_LEN` primero a 131072 y luego a 65536.
+Qwen3.8 declara 262144 tokens nativos y admite texto, imágenes y vídeo. Este perfil deshabilita vídeo y limita cada petición a una imagen para contener memoria. En una A100 Ampere los pesos FP8 usan un kernel compatible W8A16/Marlin, pero la caché KV debe ser BF16: Triton requiere SM89 o posterior para KV FP8 y la A100 es SM80. `QWEN_ENFORCE_EAGER=true` y `TRITON_ATTN` son valores conservadores para evitar bloqueos de CUDA graphs y compilación JIT de FlashInfer. Si 262K no deja caché suficiente, reduzca `QWEN_MAX_MODEL_LEN` primero a 131072 y luego a 65536.
 
 ## Ficheros
 
@@ -239,21 +239,23 @@ Todas estas variables de ejecución son opcionales. Para la primera prueba en A1
 |---|---|---|
 | `QWEN_MODEL_ID` | `Qwen/Qwen3.8-27B-FP8` | También puede ser un snapshot local inmutable |
 | `QWEN_SERVED_MODEL_NAME` | `qwen3.8-27b-fp8` | Nombre devuelto en la respuesta |
-| `VLLM_TENSOR_PARALLEL_SIZE` | `1` | Una A100; evita IPC multiproceso entre GPU |
-| `VLLM_GPU_MEMORY_UTILIZATION` | `0.90` | No superar `0.95`; baje si hay agentes GPU residentes |
-| `VLLM_MAX_MODEL_LEN` | `262144` | Fallbacks recomendados: `131072`, `65536`, `32768` |
-| `VLLM_MAX_NUM_SEQS` | `1` | Prioriza contexto sobre concurrencia |
-| `VLLM_MAX_NUM_BATCHED_TOKENS` | `8192` | Bloque de prefill, no longitud total del chat |
-| `VLLM_KV_CACHE_DTYPE` | `fp8` | Reduce aproximadamente a la mitad la memoria de KV |
-| `VLLM_ENFORCE_EAGER` | `true` | Evita un bloqueo observado en Ampere durante CUDA graph capture |
+| `QWEN_TENSOR_PARALLEL_SIZE` | `1` | Una A100; evita IPC multiproceso entre GPU |
+| `QWEN_GPU_MEMORY_UTILIZATION` | `0.90` | No superar `0.95`; baje si hay agentes GPU residentes |
+| `QWEN_MAX_MODEL_LEN` | `262144` | Fallbacks recomendados: `131072`, `65536`, `32768` |
+| `QWEN_MAX_NUM_SEQS` | `1` | Prioriza contexto sobre concurrencia |
+| `QWEN_MAX_NUM_BATCHED_TOKENS` | `8192` | Bloque de prefill, no longitud total del chat |
+| `QWEN_KV_CACHE_DTYPE` | `bfloat16` | Obligatorio con Triton en A100 SM80; FP8 KV necesita SM89+ |
+| `QWEN_ENFORCE_EAGER` | `true` | Evita un bloqueo observado en Ampere durante CUDA graph capture |
 | `QWEN_ATTENTION_BACKEND` | `TRITON_ATTN` | Evita depender de compilación JIT FlashInfer en el Runtime |
 | `QWEN_MAX_OUTPUT_TOKENS` | `512` | Límite del endpoint; puede elevarse hasta 8192 validando timeouts |
 | `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | Vídeo está deshabilitado en este perfil |
 | `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | Lista separada por comas para restringir URLs de imágenes |
-| `VLLM_CPU_OFFLOAD_GB` | `0` | Mantiene la ejecución en GPU; el offload reduce rendimiento |
+| `QWEN_CPU_OFFLOAD_GB` | `0` | Mantiene la ejecución en GPU; el offload reduce rendimiento |
 | `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | Espera máxima del proxy a que el worker aislado cargue pesos y kernels |
 
 No configure `VLLM_VERSION` ni las variables de URL como variables de ejecución: solo se leen durante el build. Para una prueba inicial de texto, bastan las dos variables obligatorias de build (`MODEL_FAMILY`, `GPU_TYPE`).
+
+Las variables antiguas `VLLM_TENSOR_PARALLEL_SIZE`, `VLLM_GPU_MEMORY_UTILIZATION`, `VLLM_MAX_MODEL_LEN`, `VLLM_MAX_NUM_SEQS`, `VLLM_MAX_NUM_BATCHED_TOKENS`, `VLLM_KV_CACHE_DTYPE`, `VLLM_ENFORCE_EAGER` y `VLLM_CPU_OFFLOAD_GB` siguen aceptándose como alias. Use los nombres `QWEN_*` de la tabla para evitar los avisos `Unknown vLLM environment variable`. En A100, una petición heredada de KV FP8 se corrige automáticamente a BF16.
 
 ## Ejemplos para el menú de despliegue
 
@@ -445,8 +447,9 @@ Estas mejoras **no cambian** los valores de precisión del proyecto: L40S contin
 - **`Qwen3_5ForConditionalGeneration failed to be inspected`:** la arquitectura sí está incluida en vLLM 0.29. En el diseño actual la inspección ocurre dentro de `worker_a100.py`, ejecutado enteramente por el Python del venv; el build comprueba previamente que la clase se puede importar. Cree un build nuevo y no cambie `PYTHONPATH` manualmente.
 - **`numpy.dtype size changed` (`Expected 96 ... got 88`):** está ejecutando una revisión que inyecta NumPy 2 del venv dentro del proceso PBJ, donde Cloudera ya cargó extensiones compiladas para NumPy 1.x. El diseño actual no modifica `sys.path`: `model_a100.py` permanece en el Runtime base y vLLM se ejecuta en `worker_a100.py` mediante el Python aislado. Cree un build nuevo; no intente resolverlo bajando NumPy dentro del venv.
 - **GitHub bloqueado durante el build:** copie la rueda `vllm-0.29.0+cu129` a un repositorio interno y configure `VLLM_WHEEL_URL`; haga lo mismo con PyTorch mediante `PYTORCH_INDEX_URL`.
-- **Qwen queda cargando o falla en CUDA graph capture:** conserve `VLLM_ENFORCE_EAGER=true` y `QWEN_ATTENTION_BACKEND=TRITON_ATTN`.
-- **Qwen informa KV cache insuficiente:** reduzca `VLLM_MAX_MODEL_LEN` a 131072, 65536 o 32768, sin elevar `VLLM_GPU_MEMORY_UTILIZATION` por encima de 0.95.
+- **Qwen queda cargando o falla en CUDA graph capture:** conserve `QWEN_ENFORCE_EAGER=true` y `QWEN_ATTENTION_BACKEND=TRITON_ATTN`.
+- **Qwen indica `FP8 KV cache is not supported ... A100`:** use `QWEN_KV_CACHE_DTYPE=bfloat16` o elimine la variable antigua `VLLM_KV_CACHE_DTYPE=fp8`. El código actual aplica BF16 automáticamente en GPU con capacidad inferior a SM89.
+- **Qwen informa KV cache insuficiente:** reduzca `QWEN_MAX_MODEL_LEN` a 131072, 65536 o 32768, sin elevar `QWEN_GPU_MEMORY_UTILIZATION` por encima de 0.95.
 - **El endpoint Qwen responde timeout:** reduzca `max_tokens`; Workbench `predict` no hace streaming y la generación puede continuar después de que el cliente abandone la petición.
 
 ## Referencias
