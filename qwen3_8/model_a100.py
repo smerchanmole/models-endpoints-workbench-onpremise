@@ -4,10 +4,35 @@ from __future__ import annotations
 
 import os
 import re
+import site
+import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
+
+# El build instala Qwen/vLLM en un venv aislado. Workbench importa este fichero
+# con el Python base de Cloudera, así que se prioriza el site-packages del venv
+# antes de importar cualquier dependencia del motor. Se conserva después el
+# sys.path base para poder importar cml.models_v1 desde el Runtime.
+_VENV_DIR = Path(__file__).resolve().parent / ".venv"
+_VENV_SITE_PACKAGES = (
+    _VENV_DIR
+    / "lib"
+    / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    / "site-packages"
+)
+if not _VENV_SITE_PACKAGES.is_dir():
+    raise RuntimeError(
+        f"No existe el entorno virtual Qwen esperado en {_VENV_SITE_PACKAGES}. "
+        "Ejecute cdsw-build.sh con MODEL_FAMILY=qwen3_8 y GPU_TYPE=a100."
+    )
+site.addsitedir(str(_VENV_SITE_PACKAGES))
+sys.path.remove(str(_VENV_SITE_PACKAGES))
+sys.path.insert(0, str(_VENV_SITE_PACKAGES))
+os.environ.setdefault("VIRTUAL_ENV", str(_VENV_DIR))
+os.environ["PATH"] = f"{_VENV_DIR / 'bin'}:{os.environ.get('PATH', '')}"
 
 # Deben establecerse antes de importar vLLM.
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")

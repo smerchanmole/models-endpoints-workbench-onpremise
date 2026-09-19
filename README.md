@@ -32,6 +32,8 @@ El instalador A100 fija `torch==2.9.1` con CUDA 12.8 para evitar el error observ
 
 Este perfil fija vLLM 0.29.0, una versión actual compatible con Qwen3.8. El instalador no usa la rueda normal de PyPI, porque esa variante está compilada para CUDA 13.0: descarga explícitamente la rueda oficial `0.29.0+cu129`. El perfil está preparado para una **A100 completa de 80 GB**; el código rechaza una GPU con menos de 70 GiB visibles para evitar un arranque que terminaría en OOM.
 
+Las dependencias se instalan en `qwen3_8/.venv`, aisladas del Python global de Cloudera. Esto evita los conflictos de SP2 entre `numpy<2`/`protobuf==4.25.3` del Runtime y las versiones que necesita vLLM 0.29. `model_a100.py` activa automáticamente esos paquetes antes de importar vLLM; no hay que seleccionar otro intérprete ni añadir una variable al Model Deployment.
+
 En el formulario **Deploy model from code**, use rutas desde la raíz del proyecto y no configure un Model Root Directory personalizado:
 
 | Campo del build/deployment | Valor |
@@ -171,6 +173,8 @@ Las dos variables del build solo permiten que el `cdsw-build.sh` común elija el
 - No son obligatorias variables de ejecución para la primera prueba. Configure `HF_TOKEN` y `HF_HOME` cuando corresponda.
 
 El código carga el motor al iniciar la réplica para que el estado Ready signifique que los pesos y kernels están utilizables. La primera carga puede tardar varios minutos. El endpoint es no streaming y limita por defecto la salida a 512 tokens para no superar el timeout habitual de Workbench Models.
+
+El build crea automáticamente `qwen3_8/.venv`. No configure manualmente `VIRTUAL_ENV`, `PYTHONPATH` ni cambie el comando de arranque: Workbench puede seguir importando `qwen3_8/model_a100.py` con su Python base, y el propio fichero prioriza las librerías aisladas conservando acceso a `cml.models_v1`.
 
 El primer arranque descarga los pesos. Para evitar arranques lentos y descargas por réplica, monte una caché persistente compartida y configure `HF_HOME` con esa ruta. No use una caché escribible compartida para arrancar muchas réplicas simultáneamente por primera vez: precargue primero el snapshot completo.
 
@@ -432,6 +436,8 @@ Estas mejoras **no cambian** los valores de precisión del proyecto: L40S contin
 - **Resultados BGE-M3 pobres:** compruebe normalización consistente, chunks semánticos y que consulta/documentos se hayan generado con exactamente el mismo checkpoint. No reutilice el índice E5 de 384 dimensiones.
 - **Build Qwen falla sin una sola línea de `pip`:** el script no llegó a ejecutarse. Deje Root Directory vacío, use `Build Script Path=cdsw-build.sh`, rutas completas para File y una Nvidia GPU Edition realmente instalada en el catálogo.
 - **Build Qwen intenta CUDA 13:** confirme que se ejecutó `qwen3_8/install_a100.sh`, que `MODEL_FAMILY=qwen3_8`, `GPU_TYPE=a100` y que no se sobrescribió `VLLM_WHEEL_URL`. El log debe mostrar `cu129`.
+- **`pip check` informa conflictos con `langchain-aws`, `pandas`, `matplotlib` o `raz-client`:** está ejecutando una revisión anterior que instalaba vLLM en el Python global. Cree un build nuevo con este código; el instalador actual usa `qwen3_8/.venv` y `pip check` solo valida ese entorno aislado. No fuerce `numpy<2` ni `protobuf==4.25.3` dentro del venv.
+- **El modelo indica que no existe `qwen3_8/.venv`:** compruebe que el build terminó correctamente, que Root Directory está vacío y que el File es `qwen3_8/model_a100.py`. El entorno se crea en la misma imagen durante `cdsw-build.sh`.
 - **GitHub bloqueado durante el build:** copie la rueda `vllm-0.29.0+cu129` a un repositorio interno y configure `VLLM_WHEEL_URL`; haga lo mismo con PyTorch mediante `PYTORCH_INDEX_URL`.
 - **Qwen queda cargando o falla en CUDA graph capture:** conserve `VLLM_ENFORCE_EAGER=true` y `QWEN_ATTENTION_BACKEND=TRITON_ATTN`.
 - **Qwen informa KV cache insuficiente:** reduzca `VLLM_MAX_MODEL_LEN` a 131072, 65536 o 32768, sin elevar `VLLM_GPU_MEMORY_UTILIZATION` por encima de 0.95.
