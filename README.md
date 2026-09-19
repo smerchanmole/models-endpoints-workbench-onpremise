@@ -91,6 +91,7 @@ Qwen3.8 declara 262144 tokens nativos y admite texto, imágenes y vídeo. Este p
 ├── qwen3_8/
 │   ├── install_a100.sh
 │   ├── model_a100.py
+│   ├── worker_a100.py
 │   └── requirements.txt
 ├── examples/
 │   ├── nemotron_input.json
@@ -174,7 +175,7 @@ Las dos variables del build solo permiten que el `cdsw-build.sh` común elija el
 
 El código carga el motor al iniciar la réplica para que el estado Ready signifique que los pesos y kernels están utilizables. La primera carga puede tardar varios minutos. El endpoint es no streaming y limita por defecto la salida a 512 tokens para no superar el timeout habitual de Workbench Models.
 
-El build crea automáticamente `qwen3_8/.venv`. No configure manualmente `VIRTUAL_ENV`, `PYTHONPATH` ni cambie el comando de arranque: Workbench puede seguir ejecutando `qwen3_8/model_a100.py` con su Python base, y el propio fichero localiza las librerías aisladas tanto cuando se importa como módulo como cuando PBJ ejecuta su contenido en una celda Jupyter sin `__file__`, conservando acceso a `cml.models_v1`. Para evitar que PBJ oculte errores del inspector externo de vLLM, el código importa y registra directamente `Qwen3_5ForConditionalGeneration`; el build valida también ese import.
+El build crea automáticamente `qwen3_8/.venv`. No configure manualmente `VIRTUAL_ENV`, `PYTHONPATH` ni cambie el comando de arranque. Workbench ejecuta `model_a100.py` con el Python base para conservar `cml.models_v1`; este proxy inicia un único `worker_a100.py` persistente con `qwen3_8/.venv/bin/python` y comunica las peticiones por un socket local. De este modo NumPy 2, protobuf y las extensiones binarias de vLLM nunca se mezclan con NumPy 1.x, Pandas o RAZ del Runtime de Cloudera. La réplica no queda Ready hasta que el worker termina de cargar el modelo.
 
 El primer arranque descarga los pesos. Para evitar arranques lentos y descargas por réplica, monte una caché persistente compartida y configure `HF_HOME` con esa ruta. No use una caché escribible compartida para arrancar muchas réplicas simultáneamente por primera vez: precargue primero el snapshot completo.
 
@@ -250,6 +251,7 @@ Todas estas variables de ejecución son opcionales. Para la primera prueba en A1
 | `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | Vídeo está deshabilitado en este perfil |
 | `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | Lista separada por comas para restringir URLs de imágenes |
 | `VLLM_CPU_OFFLOAD_GB` | `0` | Mantiene la ejecución en GPU; el offload reduce rendimiento |
+| `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | Espera máxima del proxy a que el worker aislado cargue pesos y kernels |
 
 No configure `VLLM_VERSION` ni las variables de URL como variables de ejecución: solo se leen durante el build. Para una prueba inicial de texto, bastan las dos variables obligatorias de build (`MODEL_FAMILY`, `GPU_TYPE`).
 
@@ -440,7 +442,8 @@ Estas mejoras **no cambian** los valores de precisión del proyecto: L40S contin
 - **`Can not perform a '--user' install` al crear el venv:** está usando una revisión anterior del instalador con un Runtime que fuerza `PIP_USER=true`. El script actual lo desactiva solo para las instalaciones dentro de `qwen3_8/.venv`; mantenga `Build Script Path=cdsw-build.sh` y cree un build nuevo.
 - **El modelo indica que no existe `qwen3_8/.venv`:** compruebe que el build terminó correctamente, que Root Directory está vacío y que el File es `qwen3_8/model_a100.py`. El entorno se crea en la misma imagen durante `cdsw-build.sh`.
 - **`NameError: name '__file__' is not defined`:** está desplegando una revisión anterior del modelo. PBJ ejecuta el Python como una celda Jupyter, no como un módulo. El código actual admite ese modo y localiza el venv desde `/home/cdsw/qwen3_8/.venv`; cree una nueva versión del modelo con el último commit.
-- **`Qwen3_5ForConditionalGeneration failed to be inspected`:** la arquitectura sí está incluida en vLLM 0.29. PBJ oculta el error interno del inspector lazy. El código actual evita ese subprocess importando y registrando directamente la clase desde el venv; el build comprueba previamente que el import funciona. Cree un build nuevo y no cambie `PYTHONPATH` manualmente.
+- **`Qwen3_5ForConditionalGeneration failed to be inspected`:** la arquitectura sí está incluida en vLLM 0.29. En el diseño actual la inspección ocurre dentro de `worker_a100.py`, ejecutado enteramente por el Python del venv; el build comprueba previamente que la clase se puede importar. Cree un build nuevo y no cambie `PYTHONPATH` manualmente.
+- **`numpy.dtype size changed` (`Expected 96 ... got 88`):** está ejecutando una revisión que inyecta NumPy 2 del venv dentro del proceso PBJ, donde Cloudera ya cargó extensiones compiladas para NumPy 1.x. El diseño actual no modifica `sys.path`: `model_a100.py` permanece en el Runtime base y vLLM se ejecuta en `worker_a100.py` mediante el Python aislado. Cree un build nuevo; no intente resolverlo bajando NumPy dentro del venv.
 - **GitHub bloqueado durante el build:** copie la rueda `vllm-0.29.0+cu129` a un repositorio interno y configure `VLLM_WHEEL_URL`; haga lo mismo con PyTorch mediante `PYTORCH_INDEX_URL`.
 - **Qwen queda cargando o falla en CUDA graph capture:** conserve `VLLM_ENFORCE_EAGER=true` y `QWEN_ATTENTION_BACKEND=TRITON_ATTN`.
 - **Qwen informa KV cache insuficiente:** reduzca `VLLM_MAX_MODEL_LEN` a 131072, 65536 o 32768, sin elevar `VLLM_GPU_MEMORY_UTILIZATION` por encima de 0.95.
