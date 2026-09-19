@@ -62,11 +62,13 @@ import os
 import torch
 import transformers
 import vllm
+from vllm.model_executor.models.qwen3_5 import Qwen3_5ForConditionalGeneration
 
 print("Installed vLLM", vllm.__version__)
 print("Installed PyTorch", torch.__version__)
 print("PyTorch CUDA build", torch.version.cuda)
 print("Installed Transformers", transformers.__version__)
+print("Qwen architecture", Qwen3_5ForConditionalGeneration.__name__)
 expected_vllm = os.environ["EXPECTED_VLLM_VERSION"]
 if not (
     vllm.__version__ == expected_vllm

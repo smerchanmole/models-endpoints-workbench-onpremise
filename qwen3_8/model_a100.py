@@ -53,18 +53,17 @@ os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from vllm import LLM, SamplingParams
-from vllm.model_executor.models import registry as _vllm_model_registry
+from vllm.model_executor.models.qwen3_5 import Qwen3_5ForConditionalGeneration
+from vllm.model_executor.models.registry import ModelRegistry
 
-# vLLM inspecciona la clase del modelo con un subprocess basado por defecto en
-# sys.executable. En PBJ ese valor sigue apuntando al Python global de Cloudera,
-# que no contiene el venv. La variable está prevista por vLLM para sustituir el
-# intérprete del inspector; así el subprocess puede importar Qwen3.5/Qwen3.8 y
-# sus extensiones sin mezclar dependencias con el Runtime base.
-_vllm_model_registry._SUBPROCESS_COMMAND = [
-    str(_VENV_DIR / "bin" / "python"),
-    "-m",
-    "vllm.model_executor.models.registry",
-]
+# El registro lazy de vLLM inspecciona la arquitectura en un subprocess. PBJ
+# oculta el stderr de ese proceso y acaba devolviendo únicamente el mensaje
+# genérico "failed to be inspected". La clase ya se puede importar desde el
+# venv, así que se registra directamente: vLLM obtiene sus capacidades en este
+# proceso y no necesita ejecutar el inspector externo.
+ModelRegistry.register_model(
+    "Qwen3_5ForConditionalGeneration", Qwen3_5ForConditionalGeneration
+)
 
 try:
     import cml.models_v1 as models
