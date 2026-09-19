@@ -35,6 +35,12 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 VENV_PYTHON="${VENV_DIR}/bin/python"
 
+# Algunos ML Runtimes exportan PIP_USER=true para que las instalaciones del
+# proyecto terminen en ~/.local. Dentro de un venv pip rechaza explícitamente
+# esa combinación. La sobrescritura solo afecta a este proceso de build.
+export PIP_USER=false
+unset PIP_PREFIX PIP_TARGET PYTHONUSERBASE
+
 "${VENV_PYTHON}" -m pip install --upgrade \
   "pip>=24.2,<26.0" \
   "packaging>=24.0,<26.0"
