@@ -53,6 +53,18 @@ os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from vllm import LLM, SamplingParams
+from vllm.model_executor.models import registry as _vllm_model_registry
+
+# vLLM inspecciona la clase del modelo con un subprocess basado por defecto en
+# sys.executable. En PBJ ese valor sigue apuntando al Python global de Cloudera,
+# que no contiene el venv. La variable está prevista por vLLM para sustituir el
+# intérprete del inspector; así el subprocess puede importar Qwen3.5/Qwen3.8 y
+# sus extensiones sin mezclar dependencias con el Runtime base.
+_vllm_model_registry._SUBPROCESS_COMMAND = [
+    str(_VENV_DIR / "bin" / "python"),
+    "-m",
+    "vllm.model_executor.models.registry",
+]
 
 try:
     import cml.models_v1 as models
