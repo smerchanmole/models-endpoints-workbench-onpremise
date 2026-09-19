@@ -250,6 +250,7 @@ Todas estas variables de ejecución son opcionales. Para la primera prueba en A1
 | `QWEN_MAX_OUTPUT_TOKENS` | `512` | Límite del endpoint; puede elevarse hasta 8192 validando timeouts |
 | `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | Vídeo está deshabilitado en este perfil |
 | `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | Lista separada por comas para restringir URLs de imágenes |
+| `VLLM_USE_FLASHINFER_SAMPLER` | `0` | Usa el sampler nativo y evita que FlashInfer necesite `ninja`/NVCC durante el warmup |
 | `QWEN_CPU_OFFLOAD_GB` | `0` | Mantiene la ejecución en GPU; el offload reduce rendimiento |
 | `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | Espera máxima del proxy a que el worker aislado cargue pesos y kernels |
 
@@ -449,6 +450,7 @@ Estas mejoras **no cambian** los valores de precisión del proyecto: L40S contin
 - **GitHub bloqueado durante el build:** copie la rueda `vllm-0.29.0+cu129` a un repositorio interno y configure `VLLM_WHEEL_URL`; haga lo mismo con PyTorch mediante `PYTORCH_INDEX_URL`.
 - **Qwen queda cargando o falla en CUDA graph capture:** conserve `QWEN_ENFORCE_EAGER=true` y `QWEN_ATTENTION_BACKEND=TRITON_ATTN`.
 - **Qwen indica `FP8 KV cache is not supported ... A100`:** use `QWEN_KV_CACHE_DTYPE=bfloat16` o elimine la variable antigua `VLLM_KV_CACHE_DTYPE=fp8`. El código actual aplica BF16 automáticamente en GPU con capacidad inferior a SM89.
+- **Qwen falla con `No such file or directory: 'ninja'` durante el warmup:** conserve `VLLM_USE_FLASHINFER_SAMPLER=0`. Solo desactiva el sampler top-k/top-p de FlashInfer; la atención continúa en Triton y los pesos FP8 en Marlin. Así no depende de compilación JIT, `ninja` ni NVCC del Runtime.
 - **Qwen informa KV cache insuficiente:** reduzca `QWEN_MAX_MODEL_LEN` a 131072, 65536 o 32768, sin elevar `QWEN_GPU_MEMORY_UTILIZATION` por encima de 0.95.
 - **El endpoint Qwen responde timeout:** reduzca `max_tokens`; Workbench `predict` no hace streaming y la generación puede continuar después de que el cliente abandone la petición.
 

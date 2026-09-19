@@ -15,6 +15,11 @@ import uuid
 from typing import Any
 
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+# El wheel de FlashInfer intenta compilar el sampler top-k/top-p durante el
+# warmup. Los ML Runtimes de Cloudera no garantizan ninja ni un toolkit NVCC
+# visible. El sampler nativo evita esa compilacion JIT; la atencion sigue
+# usando TRITON_ATTN y los pesos FP8 siguen usando Marlin.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # Estas variables son configuración de este wrapper, no variables oficiales de
