@@ -1,4 +1,11 @@
-"""Motor Qwen3.8 ejecutado exclusivamente con qwen3_8/.venv/bin/python."""
+"""Motor Qwen3.8 ejecutado exclusivamente con el Python del virtualenv.
+
+Este proceso posee Torch, vLLM, Transformers y NumPy, carga una sola instancia
+del modelo y atiende todas las llamadas del proxy mediante mensajes JSON con
+longitud prefijada. No importa módulos de Cloudera y nunca modifica el
+``sys.path`` del proceso PBJ. Consulte ``qwen3_8/README.md`` para la arquitectura
+y los valores verificados en A100 80 GB.
+"""
 
 from __future__ import annotations
 
@@ -131,6 +138,7 @@ _allowed_domains = [
 
 
 def _load_engine() -> LLM:
+    """Valida la GPU, normaliza la caché KV y construye el motor vLLM."""
     try:
         shm = os.statvfs("/dev/shm")
         print(
@@ -161,6 +169,9 @@ def _load_engine() -> LLM:
             "40 GB hace falta un perfil de contexto reducido validado aparte."
         )
 
+    # Los pesos FP8 y la caché KV son decisiones independientes. Marlin puede
+    # ejecutar los pesos FP8 del checkpoint en A100, pero Triton solo admite KV
+    # FP8 nativo desde SM89. Una A100 es SM80 y necesita KV BF16.
     effective_kv_cache_dtype = KV_CACHE_DTYPE
     compute_capability = torch.cuda.get_device_capability(0)
     if KV_CACHE_DTYPE.lower().startswith("fp8") and compute_capability < (8, 9):
@@ -207,6 +218,7 @@ def _load_engine() -> LLM:
 
 
 def _messages(args: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normaliza ``prompt`` o valida el array de chat ``messages``."""
     messages = args.get("messages")
     if messages is None:
         prompt = args.get("prompt")
@@ -238,6 +250,7 @@ def _number(
 
 
 def _split_reasoning(text: str) -> tuple[str | None, str]:
+    """Separa el bloque ``<think>`` de la respuesta visible, si existe."""
     if "</think>" not in text:
         return None, text.strip()
     reasoning, answer = text.split("</think>", 1)
@@ -246,6 +259,7 @@ def _split_reasoning(text: str) -> tuple[str | None, str]:
 
 
 def _predict(engine: LLM, args: dict[str, Any]) -> dict[str, Any]:
+    """Valida la entrada, genera una respuesta y devuelve formato tipo OpenAI."""
     if not isinstance(args, dict):
         raise ValueError("La entrada debe ser un objeto JSON")
     messages = _messages(args)
@@ -343,6 +357,7 @@ def _send_message(sock: socket.socket, value: dict[str, Any]) -> None:
 
 
 def _serve(ipc_fd: int) -> None:
+    """Carga el motor una vez y sirve peticiones hasta que se cierre el proxy."""
     sock = socket.socket(fileno=ipc_fd)
     try:
         try:

@@ -1,4 +1,16 @@
-"""Proxy de Cloudera Workbench para Qwen3.8 aislado en su virtualenv."""
+"""Punto de entrada PBJ de Cloudera para Qwen3.8.
+
+Cloudera ejecuta este fichero como código de una celda Jupyter con el Python
+base del ML Runtime. Ese proceso debe conservar ``cml.models_v1`` y las
+extensiones de Cloudera, por lo que no se le añaden los site-packages de vLLM.
+En su lugar crea un worker persistente con ``qwen3_8/.venv/bin/python`` y usa
+un socket local para transportar JSON. Así se aíslan NumPy 2, protobuf, Torch
+y vLLM del NumPy 1.x y de las extensiones binarias incluidas por SP2.
+
+La única función que se registra en el Model Deployment es ``predict``. La
+carga del módulo espera a que el worker confirme que modelo, caché y kernels
+están listos; por tanto, una réplica marcada Ready puede atender inferencias.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +36,11 @@ except ImportError:  # Permite validar el wrapper fuera de Cloudera.
 
 
 def _model_dir() -> Path:
+    """Localiza los artefactos tanto con import normal como bajo PBJ.
+
+    PBJ puede ejecutar el fichero sin definir ``__file__``. Por eso se prueban
+    también el directorio de trabajo y su subdirectorio ``qwen3_8``.
+    """
     model_file = globals().get("__file__")
     candidates: list[Path] = []
     if model_file:
@@ -109,10 +126,13 @@ _WORKER = subprocess.Popen(
     pass_fds=(_CHILD_SOCKET.fileno(),),
     close_fds=True,
 )
+# El descriptor hijo ya pertenece al worker. Cerrarlo en el proxy es necesario
+# para que un cierre del worker produzca EOF y no deje el socket vivo por error.
 _CHILD_SOCKET.close()
 
 
 def _stop_worker() -> None:
+    """Cierra el worker de forma ordenada y lo fuerza solo si no responde."""
     try:
         _PARENT_SOCKET.close()
     finally:
@@ -150,7 +170,13 @@ if not _ready.get("ok"):
 
 @models.cml_model
 def predict(args: dict[str, Any]) -> dict[str, Any]:
-    """Envía una petición JSON al motor Qwen persistente y aislado."""
+    """Envía una petición JSON al motor Qwen persistente y aislado.
+
+    El lock serializa peticiones porque el perfil A100 está deliberadamente
+    configurado para una secuencia concurrente y prioriza el contexto de 262K.
+    Los errores del worker se devuelven con traceback para que aparezca la causa
+    original en el log del Model Deployment.
+    """
     if not isinstance(args, dict):
         raise ValueError("La entrada debe ser un objeto JSON")
 

@@ -32,7 +32,9 @@ El instalador A100 fija `torch==2.9.1` con CUDA 12.8 para evitar el error observ
 
 Este perfil fija vLLM 0.29.0, una versión actual compatible con Qwen3.8. El instalador no usa la rueda normal de PyPI, porque esa variante está compilada para CUDA 13.0: descarga explícitamente la rueda oficial `0.29.0+cu129`. El perfil está preparado para una **A100 completa de 80 GB**; el código rechaza una GPU con menos de 70 GiB visibles para evitar un arranque que terminaría en OOM.
 
-Las dependencias se instalan en `qwen3_8/.venv`, aisladas del Python global de Cloudera. Esto evita los conflictos de SP2 entre `numpy<2`/`protobuf==4.25.3` del Runtime y las versiones que necesita vLLM 0.29. `model_a100.py` activa automáticamente esos paquetes antes de importar vLLM; no hay que seleccionar otro intérprete ni añadir una variable al Model Deployment.
+Las dependencias se instalan en `qwen3_8/.venv`, aisladas del Python global de Cloudera. Esto evita los conflictos de SP2 entre `numpy<2`/`protobuf==4.25.3` del Runtime y las versiones que necesita vLLM 0.29. `model_a100.py` permanece en el Python base para poder importar `cml.models_v1` y lanza `worker_a100.py` con el intérprete aislado; no hay que seleccionar otro intérprete ni modificar `PYTHONPATH`.
+
+La guía completa, incluida la configuración validada, arquitectura, API, lectura de logs y resolución de todos los errores encontrados, está en [`qwen3_8/README.md`](qwen3_8/README.md).
 
 En el formulario **Deploy model from code**, use rutas desde la raíz del proyecto y no configure un Model Root Directory personalizado:
 
@@ -89,6 +91,7 @@ Qwen3.8 declara 262144 tokens nativos y admite texto, imágenes y vídeo. Este p
 │   ├── model_a100.py
 │   └── model_h100.py
 ├── qwen3_8/
+│   ├── README.md
 │   ├── install_a100.sh
 │   ├── model_a100.py
 │   ├── worker_a100.py
