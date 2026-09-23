@@ -3,8 +3,9 @@
 Este proceso posee Torch, vLLM, Transformers y NumPy, carga una sola instancia
 del modelo y atiende todas las llamadas del proxy mediante mensajes JSON con
 longitud prefijada. No importa módulos de Cloudera y nunca modifica el
-``sys.path`` del proceso PBJ. Consulte ``qwen3_8/README.md`` para la arquitectura
-y los valores verificados en A100 80 GB.
+``sys.path`` del proceso PBJ. Consulte la guía detallada de Qwen al final del
+``README.md`` principal para la arquitectura y los valores verificados en
+A100 80 GB.
 """
 
 from __future__ import annotations
