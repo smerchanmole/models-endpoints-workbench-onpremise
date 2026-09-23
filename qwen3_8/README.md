@@ -1,5 +1,7 @@
 # Qwen3.8-27B-FP8 en Cloudera AI Workbench SP2/SP3
 
+[Versión en español](#qwen38-27b-fp8-en-cloudera-ai-workbench-sp2sp3) · [English version](#english-version-qwen38-27b-fp8-on-cloudera-ai-workbench-sp2sp3)
+
 Esta guía documenta el perfil probado de `Qwen/Qwen3.8-27B-FP8` como **Workbench Model** en una NVIDIA A100 PCIe de 80 GB. El endpoint usa la función `predict(args)` de Cloudera y devuelve una respuesta JSON similar a Chat Completions.
 
 ## Estado validado
@@ -614,3 +616,461 @@ En SP3, AI Inference service puede aportar una API gestionada y compatibilidad O
 - [Inventario de servidores y arquitecturas de AI Inference SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-model-server-inventory-sp3.html)
 - [Argumentos vLLM soportados por AI Inference SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-caii-supported-vllm-command-line-arguments-sp3.html)
 - [Interacción y streaming con Model Endpoints de AI Inference](https://docs.cloudera.com/machine-learning/1.5.5/ai-inference/ml-ai-inference.pdf)
+
+---
+
+# English version: Qwen3.8-27B-FP8 on Cloudera AI Workbench SP2/SP3
+
+[Spanish version](#qwen38-27b-fp8-en-cloudera-ai-workbench-sp2sp3) · [English version](#english-version-qwen38-27b-fp8-on-cloudera-ai-workbench-sp2sp3)
+
+This guide documents the tested `Qwen/Qwen3.8-27B-FP8` profile as a **Workbench Model** on one NVIDIA A100 PCIe 80 GB. The endpoint uses Cloudera's `predict(args)` function and returns a JSON response shaped like Chat Completions.
+
+## Validated state
+
+The configuration was validated on September 19, 2026, in an on-premises SP2 environment:
+
+| Component | Observed value |
+|---|---|
+| GPU | NVIDIA A100 80GB PCIe, 79.3 GiB visible, SM80 |
+| Runtime | Nvidia GPU Edition, Python 3.10 |
+| vLLM | `0.29.0+cu129` |
+| PyTorch | `2.13.0+cu129` |
+| PyTorch CUDA build | `12.9` |
+| Transformers | `5.15.0` |
+| Worker NumPy | `2.2.6` |
+| Weights | Block-wise FP8, executed as weight-only FP8 through Marlin/W8A16 |
+| Observed weight memory | 28.9 GiB |
+| KV cache | BF16, 40.31 GiB available |
+| Observed KV capacity | 647,288 tokens |
+| Configured context | 262,144 tokens |
+| vLLM calculated concurrency | 2.47 requests at 262,144 tokens; the wrapper limits actual concurrency to one |
+| Attention backend | `TRITON_ATTN` |
+| Sampler | Native vLLM/PyTorch; FlashInfer sampler disabled |
+| SP2 output ceiling | `QWEN_MAX_OUTPUT_TOKENS=8192` |
+| Default output when `max_tokens` is omitted | 128 tokens |
+| Result | Model loaded and endpoint operational |
+
+These figures are diagnostic references, not guaranteed reservations. They can vary with the driver, Runtime, checkpoint revision, resident processes, and actual GPU allocation. This profile requires a full A100 80 GB and rejects less than 70 GiB visible so that MIG, vGPU, or A100 40 GB configurations fail before loading the weights.
+
+## Minimal working deployment
+
+Use the following values in **Deploy model from code**:
+
+| Field | Value |
+|---|---|
+| Root Directory / Model Root Directory | empty or `.` |
+| Build Script Path | `cdsw-build.sh` |
+| Build variable | `MODEL_FAMILY=qwen3_8` |
+| Build variable | `GPU_TYPE=a100` |
+| File | `qwen3_8/model_a100.py` |
+| Function | `predict` |
+| Example Input | contents of `examples/qwen3_8_input.json` |
+| Runtime | Nvidia GPU Edition, Python 3.10 or 3.11, Ubuntu 24.04 |
+| GPU | 1 × full A100 80 GB, no MIG |
+| CPU | 8 vCPU minimum; 16 recommended |
+| RAM | 64 GiB minimum; 128 GiB recommended |
+| Initial replicas | 1 |
+
+The model starts without runtime variables because safe defaults are embedded in the code. The validated SP2 deployment added `QWEN_MAX_OUTPUT_TOKENS=8192` to permit long answers. This is a ceiling, not a request to always generate 8192 tokens: each request is still governed by `max_tokens`, whose default is 128.
+
+## File responsibilities
+
+| File | Responsibility |
+|---|---|
+| `../cdsw-build.sh` | Selects the installer through `MODEL_FAMILY` and `GPU_TYPE` |
+| `install_a100.sh` | Creates `.venv`, installs the cu129 vLLM wheel, and validates versions/imports |
+| `requirements.txt` | Pins Transformers for reproducible builds |
+| `model_a100.py` | PBJ entry point; imports Cloudera and acts as a lightweight proxy |
+| `worker_a100.py` | Isolated process that imports vLLM, loads the model, and generates responses |
+| `../examples/qwen3_8_input.json` | Input ready to paste into the deployment form |
+| `../examples/qwen3_8_output.json` | Representative response shape |
+
+## Why an isolated virtual environment is required
+
+SP2 already contains libraries used by Cloudera, including extensions compiled for NumPy 1.x and constraints such as `protobuf==4.25.3`. vLLM 0.29 installs a newer stack, including NumPy 2. Mixing both stacks in one interpreter caused ABI errors such as:
+
+```text
+numpy.dtype size changed, may indicate binary incompatibility
+```
+
+The installer creates `qwen3_8/.venv`. It does not activate that environment in PBJ and does not inject its `site-packages` into the base process:
+
+```text
+Cloudera/PBJ base Python
+        |
+        | predict(args), JSON over a local socket
+        v
+model_a100.py  ----------------->  worker_a100.py with .venv/bin/python
+  cml.models_v1                    torch + numpy 2 + vLLM + transformers
+```
+
+The proxy starts one persistent worker. The worker loads the weights once, reports `ready` after initializing cache and kernels, and then serves requests. Startup failures are returned with their complete traceback so that the root cause appears in the Cloudera log.
+
+Do not set `PYTHONPATH`, `VIRTUAL_ENV`, `PIP_USER`, or another interpreter manually. `install_a100.sh` neutralizes `PIP_USER=true` only during the build because pip forbids user installs inside a virtual environment.
+
+## Why the cu129 wheel is used
+
+The standard vLLM 0.29.0 PyPI resolution can select a CUDA variant newer than the Runtime driver. The installer explicitly downloads:
+
+```text
+vllm-0.29.0+cu129-cp38-abi3-manylinux_2_28_<architecture>.whl
+```
+
+It then runs `pip check` inside the virtual environment and validates vLLM, Transformers, the CUDA build used by PyTorch, and the import of `Qwen3_5ForConditionalGeneration`. Qwen3.8 is the published model name; `Qwen3_5ForConditionalGeneration` is the internal architecture resolved by Transformers/vLLM and does not mean that a different model was loaded.
+
+## Precision, memory, and context
+
+Weights and KV cache are separate decisions:
+
+- **FP8 weights:** valid on A100 through the Marlin weight-only FP8/W8A16 kernel. A100 has no native FP8 compute, so it may be slower than Hopper, but the model loads correctly.
+- **FP8 KV cache:** incompatible with Triton on A100 SM80; native support requires SM89 or newer.
+- **BF16 KV cache:** validated configuration. The code uses it by default and automatically converts a legacy FP8 request to BF16 on a GPU older than SM89.
+- **Context:** 262,144 tokens were validated with 40.31 GiB of cache and a calculated capacity of 647,288 tokens.
+- **Prefill:** 8192 is the processing block, not the total chat length.
+- **Concurrency:** the endpoint serializes calls and uses one active sequence to prioritize context and stability.
+
+If another Runtime exposes less free VRAM, reduce `QWEN_MAX_MODEL_LEN` in this order: `131072`, `65536`, `32768`. Do not increase `QWEN_GPU_MEMORY_UTILIZATION` beyond `0.95`.
+
+## Triton, FlashInfer, and ninja
+
+Three independent execution paths are involved:
+
+1. Marlin executes FP8-weight linear layers on Ampere.
+2. `TRITON_ATTN` executes attention with BF16 KV cache.
+3. The native vLLM/PyTorch sampler performs top-k/top-p sampling.
+
+FlashInfer tried to JIT-compile its sampler during warmup, but the Runtime did not contain `ninja`:
+
+```text
+FileNotFoundError: [Errno 2] No such file or directory: 'ninja'
+```
+
+Installing only `ninja` would not guarantee success because JIT compilation may also require a visible NVCC toolkit. The worker therefore sets `VLLM_USE_FLASHINFER_SAMPLER=0` before importing vLLM. This only replaces top-k/top-p sampling; it does not disable Triton, change weights to BF16, or reduce context length.
+
+## Build variables
+
+| Variable | Required | Default | Purpose |
+|---|---:|---|---|
+| `MODEL_FAMILY` | Yes | `nemotron` in the global dispatcher | Must be `qwen3_8` |
+| `GPU_TYPE` | Yes | `l40s` in the global dispatcher | Must be `a100` |
+| `PYTHON_BIN` | No | `python3` | Interpreter used to create the virtual environment |
+| `VLLM_VERSION` | No | `0.29.0` | Official wheel version |
+| `VLLM_CUDA_VARIANT` | No | `129` | CUDA wheel suffix |
+| `VLLM_WHEEL_URL` | No | Official GitHub release | Allows an internal mirror |
+| `PYTORCH_INDEX_URL` | No | PyTorch cu129 index | Allows an internal mirror |
+
+Do not copy build variables into runtime configuration unless local Cloudera policy shares the same variable set between phases. Changing a build variable requires a new build.
+
+## Runtime variables: complete map
+
+Three values must not be confused:
+
+- **Code default:** used when the variable is absent.
+- **Validated SP2 value:** used by the deployment that worked.
+- **Accepted range:** wrapper validation limits, not a promise that every value is appropriate for one A100.
+
+| Variable | Code default | Validated SP2 | Accepted range | Recommendation |
+|---|---:|---:|---:|---|
+| `QWEN_MODEL_ID` | `Qwen/Qwen3.8-27B-FP8` | same | ID or path | Keep it or use an immutable snapshot |
+| `QWEN_SERVED_MODEL_NAME` | `qwen3.8-27b-fp8` | same | text | Output metadata only |
+| `QWEN_TENSOR_PARALLEL_SIZE` | `1` | `1` | `1-8` | Keep `1` with one A100 |
+| `QWEN_GPU_MEMORY_UTILIZATION` | `0.90` | `0.90` | `0.50-0.95` | Keep `0.90`; test `0.92` only if more KV is needed |
+| `QWEN_MAX_MODEL_LEN` | `262144` | `262144` | `2048-262144` | Keep native maximum; reduce on memory pressure |
+| `QWEN_MAX_NUM_SEQS` | `1` | `1` | `1-64` | Keep `1`; the proxy serializes requests |
+| `QWEN_MAX_NUM_BATCHED_TOKENS` | `8192` | `8192` | `2048-131072` | SP3: test `16384` for long prefill |
+| `QWEN_KV_CACHE_DTYPE` | `bfloat16` | `bfloat16` | vLLM-supported string | Must remain BF16 on A100 |
+| `QWEN_ENFORCE_EAGER` | `true` | `true` | boolean | SP3: test `false` in isolation |
+| `QWEN_ATTENTION_BACKEND` | `TRITON_ATTN` | same | vLLM backend | Keep Triton in this profile |
+| `QWEN_CPU_OFFLOAD_GB` | `0` | `0` | `0-128` | Keep `0`; weights fit in GPU |
+| `QWEN_MAX_OUTPUT_TOKENS` | `512` | **`8192`** | `1-8192` | Keep `8192` as a ceiling if timeouts permit |
+| `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | `1` | `0-4` | Keep `1`; test `2` only with measurements |
+| `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | `1800` | `60-7200` | Startup only; does not affect inference |
+| `VLLM_USE_FLASHINFER_SAMPLER` | `0` | `0` | `0/1` | Keep `0` without a validated `ninja`/NVCC toolchain |
+| `VLLM_ALLOWED_MEDIA_DOMAINS` | empty | empty | CSV list | Use an explicit allowlist in production |
+| `HF_TOKEN` | empty | environment-specific | secret | Read-only token; never commit it |
+| `HF_HOME` | HF default | environment-specific | path | Persistent storage with enough free space |
+
+Legacy names such as `VLLM_MAX_MODEL_LEN`, `VLLM_GPU_MEMORY_UTILIZATION`, `VLLM_KV_CACHE_DTYPE`, `VLLM_ENFORCE_EAGER`, `VLLM_MAX_NUM_SEQS`, `VLLM_MAX_NUM_BATCHED_TOKENS`, `VLLM_TENSOR_PARALLEL_SIZE`, and `VLLM_CPU_OFFLOAD_GB` remain accepted as aliases. The worker captures and removes them before importing vLLM because they are not official vLLM 0.29 environment variables. Use `QWEN_*` names for new deployments.
+
+## Parameter-by-parameter explanation
+
+### Model identity
+
+`QWEN_MODEL_ID` selects configuration, tokenizer, and weights. Pin an immutable snapshot or internal mirror for production reproducibility. `QWEN_SERVED_MODEL_NAME` only changes the logical model name returned in JSON.
+
+### GPU distribution
+
+`QWEN_TENSOR_PARALLEL_SIZE` is the number of GPUs cooperating on one model instance. With one allocated A100, the only meaningful value is `1`; setting `2` does not double performance and will fail because a second device is unavailable.
+
+`QWEN_CPU_OFFLOAD_GB` moves part of the weights to RAM and copies them over PCIe when required. It is useful when a model does not fit, but here the 28.9 GiB weights fit comfortably. Keep it at zero to avoid PCIe latency.
+
+### VRAM and context
+
+`QWEN_GPU_MEMORY_UTILIZATION` is vLLM's VRAM budget for weights, activations, kernels, and KV cache. `0.90` is validated. `0.92` is a controlled experiment; `0.95` leaves little safety margin. Raising it does not make short answers faster or extend the native 262K limit.
+
+`QWEN_MAX_MODEL_LEN` covers system instructions, history, RAG documents, visual tokens, and generated output together. Although 262K is available, routine RAG chats should use smaller operational budgets for lower prefill latency. Reduce it stepwise if another Runtime leaves less memory.
+
+`QWEN_KV_CACHE_DTYPE=bfloat16` is required because A100 is SM80. SP3 cannot turn the same physical GPU into SM89; software upgrades do not enable Triton FP8 KV support that the hardware lacks.
+
+### Prefill and concurrency
+
+`QWEN_MAX_NUM_BATCHED_TOKENS` is the prefill block size. Think of the entire context as a book and this parameter as how many pages are placed on the desk at once. Larger blocks can accelerate long prompts but increase peak activations. Test 16384 on SP3 before considering 32768.
+
+`QWEN_MAX_NUM_SEQS` controls active sequences inside vLLM. The current proxy and worker both use locks, so raising it does not create useful parallelism. Concurrency requires an IPC and cancellation redesign first.
+
+`QWEN_ENFORCE_EAGER=true` avoids CUDA Graph capture and was the stable SP2 choice. Setting it to `false` may improve decode latency and tokens/s, but adds warmup, graph memory, and capture risk. It is the most interesting SP3 performance experiment and must be tested alone.
+
+### Execution backends
+
+`QWEN_ATTENTION_BACKEND=TRITON_ATTN` is the validated attention route. A backend that is faster on Hopper is not automatically suitable for A100.
+
+`VLLM_USE_FLASHINFER_SAMPLER=0` disables only FlashInfer top-k/top-p sampling. Keep it disabled until `ninja`, NVCC, CUDA headers, and kernel compatibility have all been verified. Expected gains are secondary with one active sequence.
+
+### Output length
+
+`QWEN_MAX_OUTPUT_TOKENS` is a safety ceiling, not an automatic generation length. The working SP2 deployment used 8192:
+
+- no `max_tokens` in the request: at most 128 tokens;
+- `"max_tokens": 1024`: allowed;
+- `"max_tokens": 9000`: rejected by the wrapper.
+
+An 8192-token ceiling is compatible with validation and context, but an actual 8192-token generation can exceed a client timeout because Workbench `predict` does not stream.
+
+### Images and network security
+
+`QWEN_MAX_IMAGES_PER_PROMPT=1` controls visual input count. The wrapper accepts up to four, but those values have not been validated. More images consume visual tokens, activation memory, and prefill time. Video is hard-coded to zero and requires a code change.
+
+`VLLM_ALLOWED_MEDIA_DOMAINS` should contain an explicit comma-separated allowlist in production so that users cannot make the endpoint fetch arbitrary internal addresses. File size, MIME type, and download timeout should also be enforced outside the model.
+
+### Container operation
+
+`QWEN_STARTUP_TIMEOUT_SECONDS` is how long the proxy waits for download, weight loading, cache creation, and warmup. It is not an inference timeout. `HF_TOKEN` should be a read-only secret, and `HF_HOME` should use persistent storage to avoid downloading the snapshot for every replica.
+
+## Limits that variables cannot fix
+
+| Limit | Imposing layer | Consequence |
+|---|---|---|
+| FP8 KV unavailable | A100 SM80 + Triton | Keep BF16 KV even on SP3 |
+| No native FP8 compute | Ampere hardware | Marlin/W8A16 weights work but are slower than Hopper |
+| One GPU | Resource profile | Tensor parallel must remain 1 |
+| FlashInfer JIT failure | No validated `ninja`/NVCC toolchain | Native sampler |
+| CUDA 12.9 | Driver and available wheel | cu129 wheel, not the CUDA 13 PyPI wheel |
+| NumPy/protobuf conflicts | Cloudera base libraries | Separate virtualenv worker process |
+| No streaming | Workbench `predict`/PBJ contract | One final JSON response |
+| No OpenAI API | Workbench endpoint type | RAG Studio needs AI Inference or a gateway |
+| No video | Explicit worker limit | Code, decoder, and testing required |
+| Real concurrency is one | Proxy and worker locks | Raising `MAX_NUM_SEQS` alone has no effect |
+
+## Why streaming is not a parameter
+
+vLLM can produce incremental tokens, but this endpoint calls synchronous `LLM.chat()`. The worker then builds one complete JSON object, sends it over IPC, and `predict(args)` returns one serializable object to PBJ. None of those layers exposes SSE or WebSocket events to the client.
+
+Sending partial IPC messages would not solve the outer transport. The practical alternatives are:
+
+1. Use **Cloudera AI Inference service**, which exposes an OpenAI API and `stream=true`, after validating this checkpoint.
+2. Build a **Workbench Application** with FastAPI plus SSE/WebSocket and an asynchronous engine.
+3. Implement job kickoff plus polling, which is asynchronous but not true token streaming.
+
+SP3 AI Inference uses vLLM 0.20 and lists `Qwen3_5ForConditionalGeneration`, the internal checkpoint architecture. This supports a compatibility trial but is not explicit certification of the Qwen3.8 FP8 artifact.
+
+## SP3 improvement plan
+
+Change **one variable at a time**. Simultaneous changes to eager mode, prefill, and memory make failures impossible to attribute.
+
+### Phase 0: reproduce the baseline
+
+```text
+QWEN_MAX_OUTPUT_TOKENS=8192
+QWEN_MAX_MODEL_LEN=262144
+QWEN_MAX_NUM_BATCHED_TOKENS=8192
+QWEN_MAX_NUM_SEQS=1
+QWEN_GPU_MEMORY_UTILIZATION=0.90
+QWEN_KV_CACHE_DTYPE=bfloat16
+QWEN_ENFORCE_EAGER=true
+QWEN_ATTENTION_BACKEND=TRITON_ATTN
+VLLM_USE_FLASHINFER_SAMPLER=0
+```
+
+The SP3 baseline is not accepted until text, long context, and image tests pass.
+
+### Phase 1: larger prefill blocks
+
+Change only:
+
+```text
+QWEN_MAX_NUM_BATCHED_TOKENS=16384
+```
+
+Goal: reduce time to first token for long RAG prompts. Revert to 8192 if peak memory rises too far, short-prompt latency regresses, or startup fails.
+
+### Phase 2: CUDA Graphs
+
+Return to a known baseline and change only:
+
+```text
+QWEN_ENFORCE_EAGER=false
+```
+
+Goal: improve decode latency and tokens/s. Revert on graph capture errors, excessive startup time, OOM, or instability. If successful, test it later together with prefill 16384.
+
+### Phase 3: images
+
+Only when a real comparison use case exists, test `QWEN_MAX_IMAGES_PER_PROMPT=2`. Measure VRAM, visual tokens, and time to first token at the target resolution. Do not jump directly to four images.
+
+### Phase 4: GPU memory
+
+Test `QWEN_GPU_MEMORY_UTILIZATION=0.92` only if an earlier phase reduces cache below the required context. It does not improve speed by itself. Do not use 0.95 without observing the full GPU and resident processes.
+
+### Phase 5: evaluate AI Inference
+
+Register the checkpoint and determine whether managed vLLM 0.20 accepts it. If it does, evaluate OpenAI chat completions, `stream=true`, RAG Studio integration, autoscaling, Knox authentication, tool calling, reasoning parsing, images, quality, and context equivalence.
+
+If the managed server rejects the checkpoint or quantization, retain Workbench 0.29 or build a dedicated OpenAI-compatible server. Do not silently downgrade the working environment's libraries.
+
+### Phase 6: concurrency requires code
+
+Only after stabilizing the engine should the proxy be redesigned for multiple in-flight requests. At that point, `QWEN_MAX_NUM_SEQS=2` becomes meaningful. It does not provide useful parallelism with the current locks.
+
+## Measuring improvements
+
+Use the same test set for every phase:
+
+| Metric | What it reveals |
+|---|---|
+| Startup time | Download, compilation, and warmup cost |
+| Time to first token | Prefill performance; estimate through controlled tests with `predict` |
+| Output tokens per second | Decode performance |
+| Total latency | Actual consumer experience |
+| Peak VRAM | OOM safety margin |
+| Reported KV capacity | Whether the target context still fits |
+| 262K success | Preservation of maximum capacity |
+| Short and long text | Avoids optimizing only one extreme |
+| One real image | Validates the vision processor |
+| Three consecutive restarts | Detects nondeterministic warmup failures |
+
+Accept a change only if it improves performance without changing functional output, reducing the required context, or failing any of three startup attempts. Record Runtime, driver, visible GPU, wheel, Torch, CUDA, and commit for reproducibility.
+
+## `predict` contract
+
+The Cloudera function must be exactly `predict`. The input is a JSON object and may use chat format:
+
+```json
+{
+  "messages": [
+    {"role": "system", "content": "Answer briefly."},
+    {"role": "user", "content": "What is Cloudera AI?"}
+  ],
+  "max_tokens": 128,
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "enable_thinking": false,
+  "reasoning_effort": "low"
+}
+```
+
+The short form is also accepted:
+
+```json
+{"prompt": "Explain RAG in two sentences", "max_tokens": 128}
+```
+
+### Request parameters
+
+| Field | Default | Accepted values |
+|---|---|---|
+| `messages` | none | Non-empty array; roles `system`, `user`, `assistant`, `tool` |
+| `prompt` | none | Text alternative to `messages` |
+| `max_tokens` | `128` | `1` through `QWEN_MAX_OUTPUT_TOKENS` |
+| `temperature` | `0.7` without thinking; `1.0` with thinking | `0.0-2.0` |
+| `top_p` | `0.80` without thinking; `0.95` with thinking | `0.01-1.0` |
+| `top_k` | `20` | `-1-1000` |
+| `min_p` | `0.0` | `0.0-1.0` |
+| `presence_penalty` | `1.5` without thinking; `0.0` with thinking | `-2.0-2.0` |
+| `repetition_penalty` | `1.0` | `0.01-2.0` |
+| `seed` | `0` | `0-2147483647` |
+| `stop` | none | Value accepted by `SamplingParams` |
+| `enable_thinking` | `false` | Boolean |
+| `preserve_thinking` | `true` | Boolean passed to the chat template |
+| `reasoning_effort` | `low` | `low`, `medium`, `xhigh` |
+
+The response resembles OpenAI JSON but is returned through the Workbench Models API. If the model emits `<think>...</think>`, the wrapper puts that content in `reasoning_content` and the visible answer in `content`.
+
+## Multimodality
+
+Message `content` can be text or a multimodal list. The engine permits one image and zero videos per prompt. For remote images, set `VLLM_ALLOWED_MEDIA_DOMAINS` to an explicit allowlist and validate image size and timeouts before exposing the endpoint. This is an image-understanding model deployment; it returns text and does not generate image or video files.
+
+## Recognizing a healthy startup
+
+Relevant lines should appear in approximately this order:
+
+```text
+SHM_DIAGNOSTIC ...
+GPU_DIAGNOSTIC name=NVIDIA A100 80GB PCIe ...
+VLLM_CONFIG ... max_model_len=262144 ... kv_cache_dtype=bfloat16 ...
+Selected MarlinFP8ScaledMMLinearKernel ...
+Model loading took ...
+Available KV cache memory ...
+GPU KV cache size: ... tokens
+FlashInfer top-p/top-k sampling disabled ...
+```
+
+The warning that A100 lacks native FP8 support is expected and confirms Marlin weight-only compression. Deprecation warnings for `cuda.nvrtc`, `cuda.cudart`, or `use_fast` did not block the validated startup.
+
+## Failure history and current solution
+
+| Symptom | Cause | Current solution |
+|---|---|---|
+| Build fails quickly or uses CUDA 13 | PyPI wheel does not match the driver | Explicit official `0.29.0+cu129` wheel |
+| Pandas, matplotlib, RAZ, or protobuf conflicts | vLLM installed in global Python | Isolated `.venv` |
+| `Can not perform a '--user' install` | Runtime exports `PIP_USER=true` | Installer sets `PIP_USER=false` during build |
+| `__file__ is not defined` | PBJ runs the file as a cell | cwd-compatible discovery |
+| Architecture inspection fails | Mixed interpreters | Inspection and engine entirely in worker |
+| `numpy.dtype size changed` | NumPy 2 injected into NumPy 1 process | Separate proxy/worker processes |
+| `FP8 KV cache is not supported ... A100` | SM80 cannot use Triton FP8 KV | BF16 KV plus automatic legacy correction |
+| `No such file or directory: 'ninja'` | FlashInfer sampler attempts JIT | `VLLM_USE_FLASHINFER_SAMPLER=0` |
+| NCCL warning during shutdown | Consequence of an earlier EngineCore failure | Find the first preceding traceback |
+| Anonymous Hugging Face warning | No `HF_TOKEN` | Read-only token and persistent cache |
+
+## Operations and security
+
+- Keep `HF_TOKEN` read-only and out of Git.
+- Pin an immutable snapshot or internal model copy for production.
+- Provide at least 40 GB of free storage for weights, metadata, and temporary files.
+- Preload an empty shared cache before starting many replicas.
+- Use one replica during validation; every replica requires its own full A100.
+- Workbench `predict` does not stream, so request length must respect client timeouts.
+- IPC is local to the container, uses an 8-byte frame header, and caps messages at 128 MiB.
+- Inference is serialized. Scale replicas with one GPU each rather than raising concurrency without tests.
+
+## Workbench versus RAG Studio
+
+This is a classic Workbench `predict` endpoint. Although its response resembles OpenAI, it does not directly expose `/v1/chat/completions`, `/v1/models`, SSE streaming, or OpenAI authentication. RAG Studio requires AI Inference or an adapter/gateway.
+
+SP3 AI Inference can provide a managed OpenAI-compatible endpoint for models in its compatibility matrix. Its vLLM 0.20 inventory lists the internal Qwen architecture, but this exact Qwen3.8 FP8 checkpoint still requires a deployment trial before migration.
+
+## Final checklist
+
+- [ ] Nvidia GPU Edition with Python 3.10/3.11.
+- [ ] Full A100 80 GB, no MIG.
+- [ ] Root Directory empty or `.`.
+- [ ] Build Script Path `cdsw-build.sh`.
+- [ ] Build variables `MODEL_FAMILY=qwen3_8` and `GPU_TYPE=a100`.
+- [ ] File `qwen3_8/model_a100.py`.
+- [ ] Function `predict`.
+- [ ] Valid example input.
+- [ ] Dependency sources reachable during build.
+- [ ] Model or snapshot reachable during first startup.
+- [ ] `QWEN_MAX_OUTPUT_TOKENS=8192` when the validated long-output ceiling is desired.
+- [ ] `VLLM_USE_FLASHINFER_SAMPLER` absent or `0`.
+- [ ] `QWEN_KV_CACHE_DTYPE` absent or `bfloat16`.
+- [ ] No manual `PYTHONPATH` or `VIRTUAL_ENV` changes.
+- [ ] Logs confirm Marlin, BF16 KV, and sufficient cache capacity.
+
+## Official references
+
+- [Qwen3.8-27B-FP8 model card](https://huggingface.co/Qwen/Qwen3.8-27B-FP8)
+- [Official Qwen3.8 repository](https://github.com/QwenLM/Qwen3.8)
+- [What's new in Cloudera AI on premises 1.5.5 SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-whats-new-1-5-5-sp3.html)
+- [SP3 AI Inference server and architecture inventory](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-model-server-inventory-sp3.html)
+- [vLLM arguments supported by SP3 AI Inference](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-caii-supported-vllm-command-line-arguments-sp3.html)
+- [AI Inference Model Endpoint interaction and streaming](https://docs.cloudera.com/machine-learning/1.5.5/ai-inference/ml-ai-inference.pdf)

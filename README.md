@@ -34,7 +34,7 @@ Este perfil fija vLLM 0.29.0, una versión actual compatible con Qwen3.8. El ins
 
 Las dependencias se instalan en `qwen3_8/.venv`, aisladas del Python global de Cloudera. Esto evita los conflictos de SP2 entre `numpy<2`/`protobuf==4.25.3` del Runtime y las versiones que necesita vLLM 0.29. `model_a100.py` permanece en el Python base para poder importar `cml.models_v1` y lanza `worker_a100.py` con el intérprete aislado; no hay que seleccionar otro intérprete ni modificar `PYTHONPATH`.
 
-La guía completa, incluida la configuración validada, arquitectura, API, lectura de logs y resolución de todos los errores encontrados, está en [`qwen3_8/README.md`](qwen3_8/README.md).
+La guía completa bilingüe —español primero e inglés después—, incluida la configuración validada, arquitectura, API, lectura de logs y resolución de todos los errores encontrados, está en [`qwen3_8/README.md`](qwen3_8/README.md).
 
 En el formulario **Deploy model from code**, use rutas desde la raíz del proyecto y no configure un Model Root Directory personalizado:
 
