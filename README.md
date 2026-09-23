@@ -176,7 +176,7 @@ Las dos variables del build solo permiten que el `cdsw-build.sh` común elija el
 - Recursos: 1 A100 80 GB completa, 8-16 vCPU, 64-128 GiB RAM y 1 réplica.
 - No son obligatorias variables de ejecución para la primera prueba. Configure `HF_TOKEN` y `HF_HOME` cuando corresponda.
 
-El código carga el motor al iniciar la réplica para que el estado Ready signifique que los pesos y kernels están utilizables. La primera carga puede tardar varios minutos. El endpoint es no streaming y limita por defecto la salida a 512 tokens para no superar el timeout habitual de Workbench Models.
+El código carga el motor al iniciar la réplica para que el estado Ready signifique que los pesos y kernels están utilizables. La primera carga puede tardar varios minutos. El endpoint es no streaming. El código usa un techo conservador de 512 tokens, pero el despliegue SP2 validado configuró `QWEN_MAX_OUTPUT_TOKENS=8192`; cada petición sigue usando 128 tokens si omite `max_tokens`.
 
 El build crea automáticamente `qwen3_8/.venv`. No configure manualmente `VIRTUAL_ENV`, `PYTHONPATH` ni cambie el comando de arranque. Workbench ejecuta `model_a100.py` con el Python base para conservar `cml.models_v1`; este proxy inicia un único `worker_a100.py` persistente con `qwen3_8/.venv/bin/python` y comunica las peticiones por un socket local. De este modo NumPy 2, protobuf y las extensiones binarias de vLLM nunca se mezclan con NumPy 1.x, Pandas o RAZ del Runtime de Cloudera. La réplica no queda Ready hasta que el worker termina de cargar el modelo.
 
@@ -250,7 +250,7 @@ Todas estas variables de ejecución son opcionales. Para la primera prueba en A1
 | `QWEN_KV_CACHE_DTYPE` | `bfloat16` | Obligatorio con Triton en A100 SM80; FP8 KV necesita SM89+ |
 | `QWEN_ENFORCE_EAGER` | `true` | Evita un bloqueo observado en Ampere durante CUDA graph capture |
 | `QWEN_ATTENTION_BACKEND` | `TRITON_ATTN` | Evita depender de compilación JIT FlashInfer en el Runtime |
-| `QWEN_MAX_OUTPUT_TOKENS` | `512` | Límite del endpoint; puede elevarse hasta 8192 validando timeouts |
+| `QWEN_MAX_OUTPUT_TOKENS` | código `512`; SP2 validado `8192` | Es el techo de seguridad; cada petición decide su salida con `max_tokens` (default 128) |
 | `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | Vídeo está deshabilitado en este perfil |
 | `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | Lista separada por comas para restringir URLs de imágenes |
 | `VLLM_USE_FLASHINFER_SAMPLER` | `0` | Usa el sampler nativo y evita que FlashInfer necesite `ninja`/NVCC durante el warmup |
@@ -410,7 +410,7 @@ Para RAG Studio, la ruta recomendada es:
 4. Elegir `Cloudera AI` como proveedor e indicar el dominio de Inference service cuando la interfaz lo solicite.
 5. Crear una colección vectorial nueva para BGE-M3; su dimensión es 1024.
 
-Este perfil de Qwen3.8 usa vLLM 0.29.0, mientras que AI Inference service de SP3 incorpora vLLM 0.20.0 y no declara esta arquitectura en su inventario. Por tanto, el perfil Qwen de este repositorio es solo para Workbench Models hasta que Cloudera certifique una versión gestionada compatible. No añada sus argumentos a AI Inference SP3 esperando que el servidor 0.20 pueda cargarla.
+Este perfil de Qwen3.8 usa vLLM 0.29.0 dentro de Workbench. AI Inference service de SP3 incorpora vLLM 0.20.0 y declara `Qwen3_5ForConditionalGeneration`, la arquitectura interna que resuelve este checkpoint, pero no certifica individualmente `Qwen/Qwen3.8-27B-FP8` en la matriz. Por tanto, una migración al servicio gestionado debe tratarse como una prueba de compatibilidad: no copie sin más las variables `QWEN_*`, porque AI Inference utiliza argumentos propios del servidor.
 
 En SP2, el Inference service gestionado lleva vLLM 0.8.5 y no soporta la arquitectura `NemotronH` de Nemotron 3. El wrapper de Workbench no soluciona el contrato OpenAI. Para integrar RAG Studio en SP2 se necesita un servidor/adaptador OpenAI-compatible separado que implemente descubrimiento, chat y embeddings, o bien actualizar a SP3. No basta con desactivar streaming.
 
@@ -421,7 +421,7 @@ Aunque Nemotron acepte 262K, para chats RAG conviene comenzar con un presupuesto
 Hay dos rutas de serving diferentes y no conviene mezclarlas:
 
 1. **Este repositorio usa Cloudera AI Workbench Models.** Las dependencias se instalan durante el build mediante `cdsw-build.sh`, por lo que los Python funcionan tanto en SP2 como en SP3 siempre que el Runtime/driver sea compatible con la rueda de vLLM y la GPU sea completa.
-2. **Cloudera AI Inference service es el servicio gestionado.** SP2 incluye vLLM 0.8.5, anterior a Nemotron 3 Nano y sin esta arquitectura en su matriz. SP3 incluye Hugging Face Model Server con vLLM 0.20.0, declara `NemotronHForCausalLM` y ofrece NIM de Nemotron 3 Nano 30B. El perfil Qwen3.8 0.29.0 no debe desplegarse con esos servidores gestionados 0.8.5/0.20.0. En SP3, para Nemotron en producción con OpenAI API, streaming y escalado, valore Inference service/NIM en lugar del wrapper de Workbench.
+2. **Cloudera AI Inference service es el servicio gestionado.** SP2 incluye vLLM 0.8.5, anterior a Nemotron 3 Nano y sin esta arquitectura en su matriz. SP3 incluye Hugging Face Model Server con vLLM 0.20.0, declara `NemotronHForCausalLM`, ofrece NIM de Nemotron 3 Nano 30B y declara `Qwen3_5ForConditionalGeneration`. Nemotron dispone por ello de una ruta gestionada clara. Para Qwen3.8, la arquitectura coincide pero el checkpoint FP8 concreto debe validarse antes de migrar; no se deben trasladar automáticamente las recetas de Workbench vLLM 0.29 al servidor gestionado 0.20.
 
 Mejoras operativas relevantes de SP3:
 

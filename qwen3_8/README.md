@@ -23,6 +23,8 @@ La configuración quedó validada el 19 de septiembre de 2026 en un entorno on-p
 | Concurrencia calculada por vLLM | 2.47 solicitudes de 262,144 tokens; el wrapper limita a una |
 | Backend de atención | `TRITON_ATTN` |
 | Sampler | Nativo de vLLM/PyTorch; FlashInfer sampler deshabilitado |
+| Límite de salida configurado en SP2 | `QWEN_MAX_OUTPUT_TOKENS=8192` |
+| Salida predeterminada si la petición omite `max_tokens` | 128 tokens |
 | Resultado | Modelo cargado y endpoint operativo |
 
 Estas cifras son una referencia de diagnóstico, no una reserva contractual. Pueden variar con el driver, Runtime, revisión del checkpoint, procesos residentes y memoria realmente asignada. Este perfil exige una A100 de 80 GB completa y rechaza menos de 70 GiB visibles para detectar MIG, vGPU o una A100 de 40 GB antes de cargar los pesos.
@@ -46,7 +48,7 @@ En **Deploy model from code** configure:
 | RAM | 64 GiB como mínimo; 128 GiB recomendados |
 | Réplicas iniciales | 1 |
 
-No hace falta declarar variables de ejecución en la primera prueba. El código contiene los valores seguros validados. Si la interfaz separa las variables de build de las variables de ejecución, `MODEL_FAMILY` y `GPU_TYPE` deben estar disponibles durante el **build**.
+El arranque funciona sin variables de ejecución porque el código contiene defaults seguros. En el despliegue SP2 validado se añadió `QWEN_MAX_OUTPUT_TOKENS=8192` para permitir respuestas largas. Esta variable es un **techo**, no obliga al modelo a generar 8192 tokens: cada petición continúa controlándose con `max_tokens`, cuyo default es 128. Si la interfaz separa las variables de build de las variables de ejecución, `MODEL_FAMILY` y `GPU_TYPE` deben estar disponibles durante el **build**.
 
 ## Qué hace cada fichero
 
@@ -149,32 +151,312 @@ Esto solo cambia el muestreo top-k/top-p. No desactiva Triton, no convierte los 
 
 No copie estas variables al entorno de ejecución salvo que una política de Cloudera utilice el mismo conjunto para ambas fases. Cambiar una variable de build requiere crear un build nuevo.
 
-## Variables de ejecución
+## Variables de ejecución: mapa completo
 
-Para la configuración validada pueden omitirse todas. Solo defina una variable cuando quiera cambiar conscientemente el default.
+Hay tres cifras diferentes que no deben confundirse:
 
-| Variable | Default | Rango/uso |
-|---|---|---|
-| `QWEN_MODEL_ID` | `Qwen/Qwen3.8-27B-FP8` | ID de Hugging Face o snapshot local |
-| `QWEN_SERVED_MODEL_NAME` | `qwen3.8-27b-fp8` | Nombre devuelto en el JSON |
-| `QWEN_TENSOR_PARALLEL_SIZE` | `1` | `1-8`; este perfil solo está validado con una GPU |
-| `QWEN_GPU_MEMORY_UTILIZATION` | `0.90` | `0.50-0.95` |
-| `QWEN_MAX_MODEL_LEN` | `262144` | `2048-262144` |
-| `QWEN_MAX_NUM_SEQS` | `1` | `1-64`; el proxy serializa las peticiones |
-| `QWEN_MAX_NUM_BATCHED_TOKENS` | `8192` | `2048-131072`; tamaño del bloque de prefill |
-| `QWEN_KV_CACHE_DTYPE` | `bfloat16` | En A100 debe terminar siendo BF16 |
-| `QWEN_ENFORCE_EAGER` | `true` | Evita CUDA graphs en este perfil conservador |
-| `QWEN_ATTENTION_BACKEND` | `TRITON_ATTN` | Backend validado en A100 |
-| `QWEN_CPU_OFFLOAD_GB` | `0` | `0-128`; no recomendado si cabe en GPU |
-| `QWEN_MAX_OUTPUT_TOKENS` | `512` | `1-8192`; techo admitido por `predict` |
-| `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | `0-4`; vídeo permanece deshabilitado |
-| `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | `60-7200`; espera del proxy al worker |
-| `VLLM_USE_FLASHINFER_SAMPLER` | `0` | Mantener `0` en el Runtime validado |
-| `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | Dominios de imágenes remotas separados por comas |
-| `HF_TOKEN` | vacío | Recomendado para evitar límites anónimos de Hugging Face |
-| `HF_HOME` | default de Hugging Face | Caché persistente con espacio suficiente |
+- **Default del código:** valor utilizado si la variable no existe.
+- **Valor SP2 validado:** valor que se empleó en el despliegue que funcionó.
+- **Rango aceptado:** límites de validación del wrapper, no una promesa de que todos los valores sean adecuados para una A100.
+
+| Variable | Default del código | SP2 validado | Rango aceptado | Recomendación |
+|---|---:|---:|---:|---|
+| `QWEN_MODEL_ID` | `Qwen/Qwen3.8-27B-FP8` | igual | ID o ruta | Mantener o usar snapshot inmutable |
+| `QWEN_SERVED_MODEL_NAME` | `qwen3.8-27b-fp8` | igual | texto | Solo cambia metadatos de salida |
+| `QWEN_TENSOR_PARALLEL_SIZE` | `1` | `1` | `1-8` | Mantener `1` con una sola A100 |
+| `QWEN_GPU_MEMORY_UTILIZATION` | `0.90` | `0.90` | `0.50-0.95` | Mantener `0.90`; probar `0.92` solo si hace falta KV |
+| `QWEN_MAX_MODEL_LEN` | `262144` | `262144` | `2048-262144` | Mantener el máximo nativo; reducir si falta memoria |
+| `QWEN_MAX_NUM_SEQS` | `1` | `1` | `1-64` | Mantener `1`; el proxy actual serializa |
+| `QWEN_MAX_NUM_BATCHED_TOKENS` | `8192` | `8192` | `2048-131072` | SP3: probar `16384` para prefill largo |
+| `QWEN_KV_CACHE_DTYPE` | `bfloat16` | `bfloat16` | cadena aceptada por vLLM | En A100 debe permanecer BF16 |
+| `QWEN_ENFORCE_EAGER` | `true` | `true` | booleano | SP3: probar `false` de forma aislada |
+| `QWEN_ATTENTION_BACKEND` | `TRITON_ATTN` | igual | backend vLLM | Mantener Triton en este perfil |
+| `QWEN_CPU_OFFLOAD_GB` | `0` | `0` | `0-128` | Mantener `0`; los pesos caben en GPU |
+| `QWEN_MAX_OUTPUT_TOKENS` | `512` | **`8192`** | `1-8192` | Mantener `8192` como techo si los timeouts lo permiten |
+| `QWEN_MAX_IMAGES_PER_PROMPT` | `1` | `1` | `0-4` | Mantener `1`; probar `2` solo con mediciones |
+| `QWEN_STARTUP_TIMEOUT_SECONDS` | `1800` | `1800` | `60-7200` | No afecta a inferencia, solo al arranque |
+| `VLLM_USE_FLASHINFER_SAMPLER` | `0` | `0` | `0/1` | Mantener `0` mientras falten `ninja`/NVCC validados |
+| `VLLM_ALLOWED_MEDIA_DOMAINS` | vacío | vacío | lista CSV | En producción usar una allowlist explícita |
+| `HF_TOKEN` | vacío | según entorno | secreto | Token de solo lectura, nunca en Git |
+| `HF_HOME` | default HF | según entorno | ruta | Usar volumen persistente con espacio suficiente |
 
 Los antiguos nombres `VLLM_MAX_MODEL_LEN`, `VLLM_GPU_MEMORY_UTILIZATION`, `VLLM_KV_CACHE_DTYPE`, `VLLM_ENFORCE_EAGER`, `VLLM_MAX_NUM_SEQS`, `VLLM_MAX_NUM_BATCHED_TOKENS`, `VLLM_TENSOR_PARALLEL_SIZE` y `VLLM_CPU_OFFLOAD_GB` se aceptan como alias. El worker los captura y elimina antes de importar vLLM porque no son variables oficiales de vLLM 0.29 y, si permanecen, generan `Unknown vLLM environment variable`. Use los nombres `QWEN_*` en despliegues nuevos.
+
+## Explicación didáctica de cada parámetro
+
+### Identidad y procedencia del modelo
+
+#### `QWEN_MODEL_ID`
+
+Indica de dónde se descargan configuración, tokenizer y pesos. El valor actual apunta a Hugging Face:
+
+```text
+Qwen/Qwen3.8-27B-FP8
+```
+
+En producción es preferible usar un snapshot fijado o una copia interna. Si se deja una rama móvil como `main`, dos builds realizados en fechas diferentes podrían descargar revisiones distintas. Cambiar esta variable por otro modelo no garantiza compatibilidad: el código, la cuantización, la arquitectura y la VRAM se validaron únicamente con este checkpoint.
+
+#### `QWEN_SERVED_MODEL_NAME`
+
+Es una etiqueta lógica. Aparece en el campo `model` de la respuesta, pero no selecciona los pesos. Puede adaptarse al catálogo corporativo sin impacto en memoria o rendimiento.
+
+### Distribución del modelo sobre GPU
+
+#### `QWEN_TENSOR_PARALLEL_SIZE`
+
+Define cuántas GPU colaboran para ejecutar una copia del modelo. Nuestro pod recibe una sola A100, por eso el único valor coherente es `1`.
+
+Aunque el validador acepta hasta `8`, poner `2` con una sola GPU no duplica rendimiento: vLLM intentará crear dos particiones y fallará. Para usar dos GPU habría que asignarlas al mismo pod, comprobar NVLink/PCIe y volver a validar memoria, NCCL y latencia.
+
+#### `QWEN_CPU_OFFLOAD_GB`
+
+Permite trasladar parte de los pesos a RAM y copiarlos por PCIe cuando se necesitan. Es una solución para modelos que no caben en GPU, no una optimización gratuita. Aquí los pesos ocupan aproximadamente 28.9 GiB y caben; `0` evita latencia y tráfico PCIe.
+
+### Presupuesto de VRAM y contexto
+
+#### `QWEN_GPU_MEMORY_UTILIZATION`
+
+Es la fracción de VRAM que vLLM intenta utilizar para pesos, activaciones, kernels y caché KV. No significa que PyTorch reserve exactamente ese porcentaje en todo momento.
+
+- `0.90`: valor seguro y validado.
+- `0.92`: experimento razonable si se necesitara más caché.
+- `0.95`: límite superior admitido por nuestro wrapper; deja poco margen a procesos del nodo y picos de memoria.
+- Un valor menor, como `0.85`, reduce riesgo de OOM pero también la caché disponible.
+
+En SP2 ya se observaron 40.31 GiB de KV y capacidad para 647,288 tokens, muy por encima del contexto configurado. Subir esta variable no hará que una respuesta corta sea más rápida ni permitirá superar el máximo nativo del modelo.
+
+#### `QWEN_MAX_MODEL_LEN`
+
+Es el presupuesto total de tokens de una secuencia:
+
+```text
+tokens de instrucciones
++ historial del chat
++ texto recuperado por RAG
++ tokens visuales
++ respuesta generada
+```
+
+El valor `262144` es el máximo nativo declarado. No significa que todas las peticiones deban rellenarlo. Un chat RAG normal debería trabajar con presupuestos menores para reducir tiempo de prefill y coste computacional.
+
+Si un Runtime deja menos VRAM libre, reduzca en escalones: `131072`, `65536`, `32768`. No use RoPE scaling para superar 262K sin una evaluación específica de calidad.
+
+#### `QWEN_KV_CACHE_DTYPE`
+
+La caché KV almacena información de atención de los tokens ya procesados. Crece con la longitud y la concurrencia, pero no es lo mismo que la precisión de los pesos.
+
+La A100 es SM80: puede ejecutar los pesos FP8 mediante Marlin, pero Triton no admite en ella KV FP8 nativo. Por eso `bfloat16` no es un conservadurismo opcional sino el valor compatible comprobado. SP3 no cambia la generación de la GPU; una A100 continúa siendo SM80.
+
+### Prefill, batching y concurrencia
+
+#### `QWEN_MAX_NUM_BATCHED_TOKENS`
+
+Es el máximo de tokens que el scheduler procesa juntos en un paso de prefill. Una analogía útil: el contexto completo es un libro y este parámetro es el número de páginas que se llevan a la mesa cada vez.
+
+- Un bloque mayor puede acelerar prompts largos al reducir el número de tandas.
+- También eleva el pico de activaciones y puede perjudicar la latencia de otras peticiones.
+- No amplía el contexto total.
+
+`8192` quedó validado en SP2. En SP3 proponemos probar `16384`; `32768` solo después de medir memoria, tiempo hasta el primer token y estabilidad.
+
+#### `QWEN_MAX_NUM_SEQS`
+
+Limita cuántas secuencias mantiene vLLM activas simultáneamente. Aunque el log calculó capacidad teórica para 2.47 secuencias máximas, el proxy tiene un lock en `predict` y otro en el worker. Por ello `2` no aumenta el throughput actual: las llamadas siguen entrando de una en una.
+
+Para aprovechar `2` habría que rediseñar IPC, cancelación y concurrencia. Hasta entonces `1` alinea el scheduler con el comportamiento real y prioriza contexto.
+
+#### `QWEN_ENFORCE_EAGER`
+
+Con `true`, vLLM ejecuta las operaciones inmediatamente y evita CUDA Graphs. Es más conservador, arranca con menos compilación y facilitó estabilizar Ampere/SP2.
+
+Con `false`, vLLM puede capturar y reutilizar grafos CUDA:
+
+- posible mejora de latencia y tokens/s;
+- warmup más largo;
+- consumo adicional de VRAM;
+- posibilidad de bloqueos o incompatibilidades de captura.
+
+Es el experimento de rendimiento más interesante para SP3, pero debe probarse solo, sin cambiar a la vez el prefill o la memoria.
+
+### Backends de ejecución
+
+#### `QWEN_ATTENTION_BACKEND`
+
+Selecciona la implementación de atención. `TRITON_ATTN` es la ruta que funcionó con A100 y KV BF16. Cambiarla puede alterar compatibilidad, memoria y kernels; no se recomienda escoger un backend solo porque tenga un nombre más rápido en otra GPU.
+
+#### `VLLM_USE_FLASHINFER_SAMPLER`
+
+Controla únicamente el sampler top-k/top-p de FlashInfer, no la atención. Con el default interno de vLLM, FlashInfer intentó compilar durante el warmup y falló porque no existía `ninja`. Una compilación completa también puede necesitar NVCC y headers CUDA.
+
+Mantenga `0`. En SP3 solo tendría sentido probar `1` después de verificar `ninja`, `nvcc`, toolkit y compatibilidad del kernel. Para una única secuencia, la ganancia esperable es secundaria frente al riesgo.
+
+### Longitud de respuesta
+
+#### `QWEN_MAX_OUTPUT_TOKENS`
+
+Es el techo de seguridad que el endpoint acepta en el campo `max_tokens`; no es la longitud que genera automáticamente.
+
+En el despliegue SP2 funcional se configuró:
+
+```text
+QWEN_MAX_OUTPUT_TOKENS=8192
+```
+
+Por ejemplo:
+
+- Si la petición omite `max_tokens`, genera como máximo 128 porque ese es el default de petición.
+- Si envía `"max_tokens": 1024`, el techo 8192 lo permite.
+- Si envía `"max_tokens": 9000`, el wrapper lo rechaza.
+
+Permitir 8192 es seguro desde el punto de vista de validación y contexto, pero una generación tan larga puede superar el timeout del cliente porque Workbench `predict` no hace streaming.
+
+### Imágenes, red y seguridad
+
+#### `QWEN_MAX_IMAGES_PER_PROMPT`
+
+Limita imágenes por conversación. `1` reduce tokens visuales, activaciones y tiempo de prefill. El wrapper acepta hasta `4`, pero esos valores no han sido validados. Vídeo está fijado a cero en el código y no se habilita con esta variable.
+
+#### `VLLM_ALLOWED_MEDIA_DOMAINS`
+
+Es una lista separada por comas de dominios desde los que vLLM puede descargar imágenes remotas. En producción debe actuar como allowlist para evitar que el endpoint se use para consultar direcciones internas. También deben aplicarse controles de tamaño, tipo MIME y tiempo de descarga fuera del modelo.
+
+### Operación del contenedor
+
+#### `QWEN_STARTUP_TIMEOUT_SECONDS`
+
+Es el tiempo que el proxy espera a que el worker descargue/cargue pesos, cree la caché y caliente kernels. No es el timeout de una inferencia y no mejora rendimiento. `1800` segundos da margen al primer arranque; una caché persistente reduce cargas posteriores.
+
+#### `HF_TOKEN` y `HF_HOME`
+
+`HF_TOKEN` evita límites anónimos y permite acceder a repositorios autorizados. Debe almacenarse como secreto de solo lectura. `HF_HOME` decide dónde se guardan pesos y metadatos; conviene apuntarlo a almacenamiento persistente para no descargar el modelo en cada réplica.
+
+## Qué no puede arreglar una variable
+
+Algunos límites pertenecen a capas distintas:
+
+| Límite | Capa que lo impone | Consecuencia |
+|---|---|---|
+| KV FP8 no disponible | A100 SM80 + backend Triton | Mantener KV BF16 incluso en SP3 |
+| FP8 no nativo | Hardware Ampere | Pesos FP8 funcionan mediante Marlin/W8A16, con menor rendimiento que Hopper |
+| Una sola GPU | Perfil de recursos | `tensor_parallel_size=1` |
+| FlashInfer JIT falla | Runtime sin toolchain `ninja`/NVCC validada | Sampler nativo |
+| CUDA 12.9 | Driver y rueda disponible | Rueda vLLM `cu129`, no PyPI CUDA 13 |
+| Conflictos NumPy/protobuf | Librerías base de Cloudera | Worker en venv y proceso separado |
+| Sin streaming | Contrato Workbench `predict`/PBJ | Una respuesta JSON al finalizar |
+| Sin API OpenAI | Tipo de endpoint Workbench | RAG Studio necesita AI Inference o gateway |
+| Sin vídeo | Límite explícito del worker | Requiere código, decodificación y pruebas; no una variable actual |
+| Concurrencia real igual a uno | Locks del proxy y worker | Subir `MAX_NUM_SEQS` por sí solo no ayuda |
+
+## Streaming: por qué no es un parámetro
+
+vLLM puede producir tokens incrementalmente, pero este endpoint usa la interfaz síncrona `LLM.chat()`. Después el worker construye un JSON completo, lo manda por el socket IPC y `predict(args)` devuelve un único objeto a PBJ. Ninguno de esos tres pasos expone Server-Sent Events o WebSocket al cliente.
+
+Cambiar el worker para enviar tokens parciales no bastaría: la función `@cml_model` seguiría esperando un resultado serializable. Las alternativas son:
+
+1. Desplegar el modelo en **Cloudera AI Inference service**, que expone API OpenAI y `stream=true` cuando el checkpoint esté validado.
+2. Crear una **Workbench Application** con FastAPI y SSE/WebSocket, usando un motor asíncrono.
+3. Implementar un patrón de trabajo asíncrono más polling; no sería streaming real.
+
+AI Inference SP3 usa vLLM 0.20 y declara `Qwen3_5ForConditionalGeneration`, la arquitectura interna resuelta por el checkpoint. Eso justifica una prueba, pero no equivale a certificación explícita del artefacto Qwen3.8 FP8.
+
+## Plan de mejora para SP3
+
+La regla principal es cambiar **una sola variable cada vez**. Si se modifican eager, prefill y memoria simultáneamente, un fallo no permite saber qué cambio lo causó.
+
+### Fase 0: reproducir la línea base
+
+Desplegar en SP3 exactamente el perfil SP2:
+
+```text
+QWEN_MAX_OUTPUT_TOKENS=8192
+QWEN_MAX_MODEL_LEN=262144
+QWEN_MAX_NUM_BATCHED_TOKENS=8192
+QWEN_MAX_NUM_SEQS=1
+QWEN_GPU_MEMORY_UTILIZATION=0.90
+QWEN_KV_CACHE_DTYPE=bfloat16
+QWEN_ENFORCE_EAGER=true
+QWEN_ATTENTION_BACKEND=TRITON_ATTN
+VLLM_USE_FLASHINFER_SAMPLER=0
+```
+
+No se considera válida la comparación hasta que esta base pase texto, contexto largo e imagen.
+
+### Fase 1: bloques de prefill mayores
+
+Cambiar únicamente:
+
+```text
+QWEN_MAX_NUM_BATCHED_TOKENS=16384
+```
+
+Objetivo: reducir tiempo hasta el primer token con prompts RAG largos. Revertir a `8192` si sube demasiado el pico de memoria, empeora la latencia corta o el motor no inicia.
+
+### Fase 2: CUDA Graphs
+
+Volver a una base conocida y cambiar únicamente:
+
+```text
+QWEN_ENFORCE_EAGER=false
+```
+
+Objetivo: mejorar latencia de decode y tokens/s. Revertir a `true` ante errores de graph capture, arranque excesivo, OOM o inestabilidad. Si funciona, repetir la prueba combinándolo después con prefill `16384`.
+
+### Fase 3: imágenes
+
+Solo si existe un caso de uso real de comparación visual:
+
+```text
+QWEN_MAX_IMAGES_PER_PROMPT=2
+```
+
+Medir memoria, tokens visuales y tiempo hasta el primer token con la resolución objetivo. No saltar directamente a cuatro imágenes.
+
+### Fase 4: memoria GPU
+
+Probar `0.92` únicamente si una fase anterior reduce la caché por debajo del contexto requerido:
+
+```text
+QWEN_GPU_MEMORY_UTILIZATION=0.92
+```
+
+No aporta velocidad por sí mismo. No usar `0.95` sin observar la GPU completa y los procesos residentes.
+
+### Fase 5: evaluar AI Inference
+
+Registrar el checkpoint y comprobar si el servidor gestionado vLLM 0.20 lo acepta. Si funciona, evaluar:
+
+- API `/v1/chat/completions`;
+- streaming `stream=true`;
+- integración directa con RAG Studio;
+- autoscaling y autenticación Knox;
+- tool calling y parser de razonamiento;
+- imágenes;
+- equivalencia de calidad y contexto con Workbench.
+
+Si el servidor no reconoce el checkpoint o la cuantización, conservar Workbench 0.29 o crear una imagen/servidor OpenAI propio; no degradar silenciosamente librerías del entorno funcional.
+
+### Fase 6: concurrencia, que requiere código
+
+Solo después de estabilizar el motor se puede rediseñar el proxy para varias peticiones. Entonces tendría sentido probar `QWEN_MAX_NUM_SEQS=2`. Con el código actual, cambiar esa variable no genera paralelismo útil.
+
+## Cómo medir las mejoras
+
+Para cada fase guarde exactamente el mismo conjunto de pruebas:
+
+| Métrica | Qué enseña |
+|---|---|
+| Tiempo de arranque | Coste de compilación, descarga y warmup |
+| Tiempo hasta primer token | Rendimiento del prefill; con `predict` se estima mediante pruebas controladas |
+| Tokens de salida por segundo | Rendimiento de decode |
+| Latencia total | Experiencia real del consumidor |
+| Pico de VRAM | Margen frente a OOM |
+| Capacidad KV informada | Si sigue cabiendo el contexto objetivo |
+| Éxito con 262K | Conservación de la capacidad máxima |
+| Texto corto y largo | Evita optimizar un único extremo |
+| Una imagen real | Comprueba el procesador visual |
+| Tres reinicios consecutivos | Detecta fallos no deterministas de warmup |
+
+Una mejora se acepta si aumenta rendimiento sin cambiar la respuesta funcional, sin reducir el contexto requerido y sin introducir fallos en tres arranques. Documente también Runtime, driver, GPU visible, wheel, Torch, CUDA y commit para que la comparación sea reproducible.
 
 ## Contrato de `predict`
 
@@ -323,3 +605,12 @@ En SP3, AI Inference service puede aportar una API gestionada y compatibilidad O
 - [ ] `QWEN_KV_CACHE_DTYPE` ausente o igual a `bfloat16`.
 - [ ] Sin modificaciones manuales de `PYTHONPATH` o `VIRTUAL_ENV`.
 - [ ] Log confirma Marlin, KV BF16 y capacidad de caché suficiente.
+
+## Fuentes oficiales de referencia
+
+- [Ficha de Qwen3.8-27B-FP8 en Hugging Face](https://huggingface.co/Qwen/Qwen3.8-27B-FP8)
+- [Repositorio oficial de Qwen3.8](https://github.com/QwenLM/Qwen3.8)
+- [Novedades de Cloudera AI on premises 1.5.5 SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-whats-new-1-5-5-sp3.html)
+- [Inventario de servidores y arquitecturas de AI Inference SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-model-server-inventory-sp3.html)
+- [Argumentos vLLM soportados por AI Inference SP3](https://docs.cloudera.com/machine-learning/1.5.5/release-notes-privatecloud/topics/ml-caii-supported-vllm-command-line-arguments-sp3.html)
+- [Interacción y streaming con Model Endpoints de AI Inference](https://docs.cloudera.com/machine-learning/1.5.5/ai-inference/ml-ai-inference.pdf)
